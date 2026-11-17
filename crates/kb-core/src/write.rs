@@ -1234,9 +1234,9 @@ pub async fn board_tidy(conn: &mut PgConnection, session_key: &str) -> Result<Wr
 }
 
 /// `detail` of `turn.summary` (docs/hooks.md section 7.2) for the board's current turn as
-/// the rules see it ([`crate::rules::TurnStart`]: everything after the latest `turn.summary`
-/// of `kb hook stop`): cards with activity of the agent (not the deliveries of
-/// `kb inbox`), notes written and tool uses.
+/// the rules see it ([`crate::rules::TurnStart`]: everything after the latest start marker,
+/// such as the `turn.summary` of `kb hook stop`): cards with activity of the agent (not the
+/// deliveries of `kb inbox`), notes written and tool uses.
 pub(crate) async fn turn_summary(conn: &mut PgConnection, board: &Board) -> Result<Value> {
     let start = crate::rules::turn_start(conn, board.id).await?;
     let (cards_changed, notes, tools): (i64, i64, i64) = sqlx::query_as(

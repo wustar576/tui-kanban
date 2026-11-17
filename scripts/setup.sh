@@ -285,8 +285,8 @@ unset KB_ADMIN_URL
 step 'kb db status'
 "$KB" db status || die "kb db status failed (exit code $?)"
 
-printf '\n%sDone. Add %s to PATH, or call %s directly.%s\n\n' \
-    "$C_DONE" "$ROOT/target/release" "$KB" "$C_OFF"
+printf '\n%sDone. kb is at %s.%s\n' "$C_DONE" "$KB" "$C_OFF"
+printf 'Put it in ~/.cargo/bin, which is on PATH: cargo install --path crates/kb --locked\n\n'
 echo 'kb db migrate (and cargo test) need KB_ADMIN_URL; it is not in the config file.'
 echo "Set it only in the shell where you need it. The password is KB_ADMIN_PASSWORD in $ENV_FILE."
 echo "  bash/zsh:    export KB_ADMIN_URL='postgres://kb_admin:<KB_ADMIN_PASSWORD>@127.0.0.1:$PORT/kanban'"

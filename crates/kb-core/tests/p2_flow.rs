@@ -1402,6 +1402,179 @@ async fn the_rules_turn_runs_from_the_previous_end_of_a_turn() {
     assert_eq!(r5_stop(&mut conn, &session).await.as_deref(), Some(R5_ONE));
 }
 
+/// The cards R4 reports for the board's current turn (no write).
+async fn r4_cards(conn: &mut PgConnection, session: &str) -> Vec<Option<i32>> {
+    let b = board(conn, session).await;
+    let results = rules::check_turn(conn, &b, &only(RuleId::R4, Level::Block))
+        .await
+        .unwrap();
+    failed(&results, RuleId::R4)
+}
+
+/// A card moved into the done lane without a result, closed three days ago.
+async fn done_days_ago(conn: &mut PgConnection, session: &str, title: &str) -> i32 {
+    let seq = add_card(conn, session, "待辦", title).await;
+    write::card_move(conn, session, seq, "完成", None)
+        .await
+        .unwrap();
+    let b = board(conn, session).await;
+    sqlx::query(
+        "UPDATE card SET closed_at = now() - interval '3 days',
+                         updated_at = now() - interval '3 days'
+         WHERE board_id = $1 AND seq = $2",
+    )
+    .bind(b.id)
+    .bind(seq)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    seq
+}
+
+async fn session_starts(conn: &mut PgConnection, session: &str, source: &str) {
+    hook::session_start(conn, session, source, || None)
+        .await
+        .unwrap()
+        .expect("board exists");
+}
+
+#[tokio::test]
+async fn without_an_end_of_a_turn_the_rules_turn_starts_at_the_session_start() {
+    // docs/hooks.md 2.4: a board without a turn.summary of the stop hook (an old board, or
+    // a session restarted before any turn ended cleanly).
+    let mut conn = common::writer().await;
+    let session = new_board(&mut conn).await;
+    let old = done_days_ago(&mut conn, &session, "幾天前完成").await;
+    // No start marker at all: the turn covers the board's whole history.
+    assert_eq!(r4_cards(&mut conn, &session).await, [Some(old)]);
+
+    // The session starts: the card done days earlier is not part of the turn.
+    session_starts(&mut conn, &session, "resume").await;
+    assert!(r4_cards(&mut conn, &session).await.is_empty());
+    start_turn(&mut conn, &session, "t1").await;
+    assert!(matches!(
+        hook::stop(&mut conn, &session, &only(RuleId::R4, Level::Block))
+            .await
+            .unwrap(),
+        Stop::Pass { .. }
+    ));
+
+    // A card done in the next turn is still checked.
+    start_turn(&mut conn, &session, "t2").await;
+    let new = add_card(&mut conn, &session, "待辦", "這一輪完成").await;
+    write::card_move(&mut conn, &session, new, "完成", None)
+        .await
+        .unwrap();
+    assert_eq!(r4_cards(&mut conn, &session).await, [Some(new)]);
+}
+
+#[tokio::test]
+async fn a_later_session_start_wins_over_an_older_end_of_a_turn() {
+    // docs/hooks.md 2.4: the turn starts after the latest start marker. Each source of a
+    // session start except `compact` starts between turns.
+    for source in ["startup", "resume", "clear", "fork"] {
+        let mut conn = common::writer().await;
+        let session = new_board(&mut conn).await;
+        start_turn(&mut conn, &session, "t1").await;
+        assert!(matches!(
+            hook::stop(&mut conn, &session, &only(RuleId::R4, Level::Off))
+                .await
+                .unwrap(),
+            Stop::Pass { .. }
+        ));
+        // A turn interrupted with Esc (no stop, no summary), then the session ends.
+        start_turn(&mut conn, &session, "t2").await;
+        let left = add_card(&mut conn, &session, "待辦", "中斷的那一輪").await;
+        write::card_move(&mut conn, &session, left, "完成", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            r4_cards(&mut conn, &session).await,
+            [Some(left)],
+            "{source}"
+        );
+
+        session_starts(&mut conn, &session, source).await;
+        assert!(r4_cards(&mut conn, &session).await.is_empty(), "{source}");
+
+        // The next end of a turn is again the latest marker.
+        start_turn(&mut conn, &session, "t3").await;
+        let late = add_card(&mut conn, &session, "待辦", "下一輪").await;
+        write::card_move(&mut conn, &session, late, "完成", None)
+            .await
+            .unwrap();
+        assert!(matches!(
+            hook::stop(&mut conn, &session, &only(RuleId::R4, Level::Off))
+                .await
+                .unwrap(),
+            Stop::Pass { .. }
+        ));
+        assert!(r4_cards(&mut conn, &session).await.is_empty(), "{source}");
+    }
+}
+
+#[tokio::test]
+async fn a_compaction_does_not_start_the_rules_turn() {
+    // docs/hooks.md 2.4: a compaction can come in the middle of a turn; the work done
+    // before it stays in the turn.
+    let mut conn = common::writer().await;
+    let session = new_board(&mut conn).await;
+    let seq = add_card(&mut conn, &session, "待辦", "卡片").await;
+    session_starts(&mut conn, &session, "startup").await;
+    start_turn(&mut conn, &session, "t1").await;
+    let edit = json!({"file_path": "a.rs"});
+    hook::tool_used(&mut conn, &session, "Edit", &edit, None, None)
+        .await
+        .unwrap();
+    session_starts(&mut conn, &session, "compact").await;
+    // R5 still sees the edit made before the compaction.
+    assert_eq!(r5_stop(&mut conn, &session).await.as_deref(), Some(R5_ONE));
+    note_on(&mut conn, &session, seq).await;
+    let s = summary_of(
+        hook::stop(&mut conn, &session, &only(RuleId::R5, Level::Block))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(s, json!({"cards_changed": 1, "notes": 1, "tools": 1}));
+
+    // R4 still sees a card done before the compaction.
+    let session = new_board(&mut conn).await;
+    session_starts(&mut conn, &session, "startup").await;
+    start_turn(&mut conn, &session, "t1").await;
+    let done = add_card(&mut conn, &session, "待辦", "壓縮前完成").await;
+    write::card_move(&mut conn, &session, done, "完成", None)
+        .await
+        .unwrap();
+    session_starts(&mut conn, &session, "compact").await;
+    assert_eq!(r4_cards(&mut conn, &session).await, [Some(done)]);
+
+    // A compaction alone is no start: without another marker the whole history counts.
+    let session = new_board(&mut conn).await;
+    let old = done_days_ago(&mut conn, &session, "幾天前完成").await;
+    session_starts(&mut conn, &session, "compact").await;
+    assert_eq!(r4_cards(&mut conn, &session).await, [Some(old)]);
+}
+
+#[tokio::test]
+async fn the_turn_board_start_begins_is_a_start_of_the_rules_turn() {
+    // docs/board-v2.md 12.4 and docs/hooks.md 2.4: `kb board start` reopening a board
+    // starts the turn; what was done before the board was archived is not part of it.
+    let mut conn = common::writer().await;
+    let session = new_board(&mut conn).await;
+    let old = done_days_ago(&mut conn, &session, "封存前完成").await;
+    assert_eq!(r4_cards(&mut conn, &session).await, [Some(old)]);
+    write::board_archive(&mut conn, &session, None, None)
+        .await
+        .unwrap();
+    let start = write::board_start(&mut conn, &session, start_args(None, false), None, || {
+        panic!("no resolve")
+    })
+    .await
+    .unwrap();
+    assert_eq!(start.status, StartStatus::Reopened);
+    assert!(r4_cards(&mut conn, &session).await.is_empty());
+}
+
 #[tokio::test]
 async fn card_activity_is_what_the_agent_wrote() {
     // docs/hooks.md 4: rows of hooks and of the user, and the deliveries of `kb inbox`, are

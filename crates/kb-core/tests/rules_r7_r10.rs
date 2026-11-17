@@ -560,6 +560,41 @@ async fn r10_moves_must_take_the_head_of_the_queue() {
 }
 
 #[tokio::test]
+async fn r10_without_an_end_of_a_turn_the_turn_starts_at_the_session_start() {
+    // docs/hooks.md 2.4: a board without a turn.summary of the stop hook.
+    let mut conn = common::writer().await;
+    let session = new_board(&mut conn).await;
+    let head = add(&mut conn, &session, "待辦", "第一張").await;
+    let second = add(&mut conn, &session, "待辦", "第二張").await;
+    let third = add(&mut conn, &session, "待辦", "第三張").await;
+    start_turn(&mut conn, &session, "t1").await;
+    mv(&mut conn, &session, second, "實作").await;
+    // No turn has ended: the move is in the turn.
+    let r = check(&mut conn, &session, RuleId::R10).await;
+    assert_eq!(r.violations.len(), 1);
+
+    // The session restarts before any turn ended cleanly: the earlier move is left out.
+    hook::session_start(&mut conn, &session, "resume", || None)
+        .await
+        .unwrap()
+        .expect("board exists");
+    start_turn(&mut conn, &session, "t2").await;
+    let r = check(&mut conn, &session, RuleId::R10).await;
+    assert!(r.checked && r.passed, "{r:?}");
+
+    // A compaction in the middle of a turn does not cut it: the move before it counts.
+    mv(&mut conn, &session, third, "實作").await;
+    hook::session_start(&mut conn, &session, "compact", || None)
+        .await
+        .unwrap()
+        .expect("board exists");
+    let r = check(&mut conn, &session, RuleId::R10).await;
+    let cards: Vec<Option<i32>> = r.violations.iter().map(|v| v.card).collect();
+    assert_eq!(cards, [Some(third)]);
+    assert!(r.violations[0].text.ends_with(&format!("#{head}.")));
+}
+
+#[tokio::test]
 async fn r10_a_blocked_head_is_not_the_head() {
     let mut conn = common::writer().await;
     let session = new_board(&mut conn).await;

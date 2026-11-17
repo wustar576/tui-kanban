@@ -113,7 +113,10 @@ bash scripts/setup.sh      # macOS（還沒有在實機上驗證）
 
 腳本產生隨機的資料庫密碼寫入 `.env`，啟動 PostgreSQL 容器（`127.0.0.1:55432`），寫入
 `~/.config/kb/config.toml`，以 `cargo build --release` 建置 `kb`，並套用資料表。它可以重複
-執行，不改變既有的密碼與資料。把 `target/release` 加入 `PATH`：hook 直接執行 `kb`。
+執行，不改變既有的密碼與資料。接著把 `kb` 放進 `~/.cargo/bin`（rustup 已經把它加入 `PATH`）：
+在專案資料夾執行 `cargo install --path crates/kb --locked`，或建立指向 `target/release/kb` 的
+符號連結 `~/.cargo/bin/kb`。hook 直接執行 `kb`。寫在 `~/.zprofile` 的 `PATH` 只有登入 shell
+會讀，以其他方式啟動的 session 的 hook 可能找不到 `kb`。
 
 安裝 Claude Code 外掛。這個 repository 本身是名為 `tui-kanban` 的外掛 marketplace：
 
@@ -122,8 +125,10 @@ claude plugin marketplace add wustar576/tui-kanban
 claude plugin install kb@tui-kanban
 ```
 
-外掛只包含 hook 與技能 `/kb:kb`。它不安裝 `kb` 與資料庫；那是上面的安裝腳本的工作。要改從
-本機的專案資料夾安裝外掛時，執行 `claude plugin install kb --marketplace <專案資料夾>`。
+外掛只包含 hook 與技能 `/kb:kb`。它不安裝 `kb` 與資料庫；那是上面的安裝腳本的工作。先裝了
+外掛時，agent 在 session 開始時得知 `kb` 不存在，`/kb:kb` 會提議安裝：你同意後，agent clone 這個 repository、執行
+安裝腳本與 `cargo install --path crates/kb --locked`，然後開始看板。要改從本機的專案資料夾
+安裝外掛時，執行 `claude plugin install kb --marketplace <專案資料夾>`。
 
 要開啟模型評測時，在 Claude Code 裡輸入一次 `/plugin configure kb@tui-kanban` 並填入金鑰，
 或把 `{"judge_api_key": "<金鑰>"}` 傳給 `claude plugin configure kb@tui-kanban --values-stdin`。

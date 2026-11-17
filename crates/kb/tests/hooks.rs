@@ -526,10 +526,37 @@ fn skill_and_help_point_agents_to_the_guide() {
     assert_eq!(o.status.code(), Some(2));
 }
 
+/// What `SessionStart` prints when `kb` cannot run (docs/board-v2.md section 12.12).
+const MISSING_KB_NOTICE: &str = "[kb] The kb plugin is installed, but the kb program was not found on PATH, so the kanban board cannot work. Tell the user this once. Only the user can install it, by typing /kb:kb. Do not invoke /kb:kb yourself.";
+
+/// The six events with a shell-form `kb hook` command.
+const HOOK_EVENTS: [&str; 6] = [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+    "SessionEnd",
+];
+
+/// The shell-form command of each event (docs/board-v2.md sections 12.12 and 13.5).
+fn shell_hook_command(event: &str) -> Option<String> {
+    Some(match event {
+        "SessionStart" => format!("kb hook session-start || echo '{MISSING_KB_NOTICE}'"),
+        "UserPromptSubmit" => "kb hook prompt || cd .".to_string(),
+        "PreToolUse" => "kb hook pre-tool".to_string(),
+        "PostToolUse" => "kb hook tool-used || cd .".to_string(),
+        "Stop" => "kb hook stop || cd .".to_string(),
+        "SessionEnd" => "kb hook session-end || cd .".to_string(),
+        _ => return None,
+    })
+}
+
 #[test]
 fn plugin_matches_the_manual_settings_example() {
-    // docs/board-v2.md section 12.12: same bindings on six events; plain `kb hook` commands
-    // only. Section 13.5: the waiter is `kb` + args ["hook", "wait"] (exec form), async with
+    // docs/board-v2.md section 12.12: same bindings on six events; `kb hook <event>`, followed
+    // by the notice on SessionStart and by `|| cd .` on four events (exit 0 when `kb` cannot
+    // run). Section 13.5: the waiter is `kb` + args ["hook", "wait"] (exec form), async with
     // asyncRewake and an explicit 24-hour timeout, on SessionStart and Stop.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
     let read = |p: &str| std::fs::read_to_string(format!("{root}{p}")).unwrap();
@@ -540,6 +567,7 @@ fn plugin_matches_the_manual_settings_example() {
     assert_eq!(events.len(), 6);
     let mut waiters = Vec::new();
     let mut judges = Vec::new();
+    let mut shell_forms = Vec::new();
     for (event, groups) in events {
         for group in groups.as_array().unwrap() {
             for h in group["hooks"].as_array().unwrap() {
@@ -559,12 +587,25 @@ fn plugin_matches_the_manual_settings_example() {
                     assert_eq!(h["timeout"], 86400);
                     waiters.push(event.as_str());
                 } else {
-                    assert!(cmd.starts_with("kb hook "), "{cmd}");
+                    assert_eq!(Some(cmd.to_string()), shell_hook_command(event), "{event}");
                     assert!(h.get("asyncRewake").is_none(), "{cmd}");
+                    shell_forms.push(event.as_str());
                 }
             }
         }
     }
+    shell_forms.sort();
+    let mut expected = HOOK_EVENTS.to_vec();
+    expected.sort();
+    assert_eq!(shell_forms, expected);
+    // The notice is quoted with single quotes in the same way by sh and PowerShell: it holds
+    // no character that either shell or JSON treats specially inside such quotes.
+    assert!(
+        MISSING_KB_NOTICE
+            .chars()
+            .all(|c| c.is_ascii() && !"'\"`$!\\;&|<>(){}".contains(c)),
+        "{MISSING_KB_NOTICE}"
+    );
     waiters.sort();
     assert_eq!(waiters, ["SessionStart", "Stop"]);
     assert_eq!(judges, ["Stop"]);
@@ -581,8 +622,135 @@ fn plugin_matches_the_manual_settings_example() {
         !front.contains("shell:"),
         "the skill uses the default shell"
     );
-    assert!(skill.contains("\n!`kb board start --session ${CLAUDE_SESSION_ID}`\n"));
+    assert!(skill.contains(&format!("\n!`{SKILL_START}`\n")), "{skill}");
     assert!(skill.contains("$ARGUMENTS"));
+}
+
+/// The skill's injected command (docs/board-v2.md section 12.12): the same text runs in
+/// bash, Git Bash and PowerShell 7, and prints `KB_NOT_INSTALLED` only when `kb` is missing.
+const SKILL_START: &str =
+    "kb board start --session ${CLAUDE_SESSION_ID} || kb --version || echo KB_NOT_INSTALLED";
+const SKILL_MARKER: &str = "KB_NOT_INSTALLED";
+
+#[test]
+fn skill_reports_a_missing_kb_with_a_marker() {
+    // docs/board-v2.md section 12.12: every part of the injected command is pre-allowed for
+    // both shells (a part that is not allowed aborts the invocation), and the skill tells the
+    // agent what the marker means and to ask before installing.
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
+    let skill = std::fs::read_to_string(format!("{root}plugin/skills/kb/SKILL.md"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    let allowed = skill
+        .lines()
+        .find_map(|l| l.strip_prefix("allowed-tools: "))
+        .expect("allowed-tools line");
+    let rules: Vec<&str> = allowed
+        .split(") ")
+        .map(|r| r.trim_end_matches(')'))
+        .collect();
+    let session = SKILL_START.replace("${CLAUDE_SESSION_ID}", "3f2a9c1e");
+    for part in session.split(" || ") {
+        for tool in ["Bash", "PowerShell"] {
+            let covered = rules.iter().any(|r| {
+                let Some(pattern) = r.strip_prefix(&format!("{tool}(")) else {
+                    return false;
+                };
+                match pattern.strip_suffix(" *") {
+                    Some(prefix) => part.starts_with(&format!("{prefix} ")),
+                    None => part == pattern,
+                }
+            });
+            assert!(covered, "{tool} does not allow {part:?}: {allowed}");
+        }
+    }
+    assert!(skill.contains(&format!("If the last line above is `{SKILL_MARKER}`")));
+    assert!(skill.contains("\nInstalling kb:\n"));
+    assert!(skill.contains("do nothing until the user says yes"));
+    assert!(skill.contains("cargo install --path crates/kb --locked"));
+}
+
+#[cfg(unix)]
+#[test]
+fn skill_command_prints_the_marker_only_without_kb() {
+    // Runs the injected command the way Claude Code's Bash tool would, without a database.
+    let script = SKILL_START.replace("${CLAUDE_SESSION_ID}", "skill-marker-test");
+    // A refused port: no database is touched. An empty HOME: no config file is read.
+    let refused = "postgres://kb:x@127.0.0.1:1/kanban_test";
+    let empty = std::env::temp_dir().join(unique("no-kb"));
+    std::fs::create_dir_all(&empty).unwrap();
+    let run = |path: &str| {
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(&script)
+            .env("PATH", path)
+            .env("HOME", &empty)
+            .env("KB_WRITER_URL", refused)
+            .env("KB_READER_URL", refused)
+            .env_remove("KB_SESSION")
+            .env_remove("HC_TERMINAL_ID")
+            .output()
+            .unwrap()
+    };
+    let o = run(empty.to_str().unwrap());
+    assert_eq!(o.status.code(), Some(0));
+    assert_eq!(stdout(&o).trim_end().lines().last(), Some(SKILL_MARKER));
+
+    // kb present but the database unreachable: no marker; the version line follows the error.
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_kb"))
+        .parent()
+        .unwrap();
+    let o = run(bin.to_str().unwrap());
+    assert_eq!(o.status.code(), Some(0));
+    let out = stdout(&o);
+    assert!(!out.contains(SKILL_MARKER), "{out}");
+    assert!(out.trim_end().ends_with(env!("CARGO_PKG_VERSION")), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_commands_without_kb_notice_once_and_stay_quiet() {
+    // docs/board-v2.md section 12.12: run each shell-form hook command the way Claude Code
+    // does on macOS and Linux (`sh -c`), without a database.
+    let refused = "postgres://kb:x@127.0.0.1:1/kanban_test";
+    let empty = std::env::temp_dir().join(unique("no-kb"));
+    std::fs::create_dir_all(&empty).unwrap();
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_kb"))
+        .parent()
+        .unwrap();
+    let run = |cmd: &str, path: &std::path::Path| {
+        Command::new("/bin/sh")
+            .arg("-c")
+            .arg(cmd)
+            .env("PATH", path)
+            .env("HOME", &empty)
+            .env("KB_WRITER_URL", refused)
+            .env("KB_READER_URL", refused)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+    for event in HOOK_EVENTS {
+        let cmd = shell_hook_command(event).unwrap();
+        // kb missing: SessionStart tells the agent; the others exit 0 without output, except
+        // pre-tool, which is not guarded (its exit code 2 blocks).
+        let o = run(&cmd, &empty);
+        match event {
+            "SessionStart" => {
+                assert_eq!(o.status.code(), Some(0));
+                assert_eq!(stdout(&o).trim_end(), MISSING_KB_NOTICE);
+            }
+            "PreToolUse" => assert_eq!(o.status.code(), Some(127), "{event}"),
+            _ => {
+                assert_eq!(o.status.code(), Some(0), "{event}");
+                assert!(o.stdout.is_empty(), "{event}");
+            }
+        }
+        // kb present (invalid input): exit 0 and no notice.
+        let o = run(&cmd, bin);
+        assert_eq!(o.status.code(), Some(0), "{event}");
+        assert!(o.stdout.is_empty(), "{event}: {}", stdout(&o));
+    }
 }
 
 // --- automatic adoption (docs/board-v2.md 12.8) ----------------------------------------------

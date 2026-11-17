@@ -42,6 +42,16 @@ fn main() -> ExitCode {
         cmd,
     };
 
+    // A hook never fails the session (docs/hooks.md section 2.3), and the hook bindings read
+    // any other non-zero exit of `kb hook <event>` as "kb cannot run" (docs/board-v2.md
+    // section 12.12). So a panic or a runtime failure in a hook exits 0.
+    let is_hook = matches!(cli.cmd, Cmd::Hook { .. });
+    if is_hook {
+        std::panic::set_hook(Box::new(|info| {
+            eprintln!("kb hook: internal error: {info}");
+            std::process::exit(0);
+        }));
+    }
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -49,7 +59,7 @@ fn main() -> ExitCode {
         Ok(rt) => rt,
         Err(e) => {
             eprintln!("cannot start runtime: {e}");
-            return ExitCode::from(1);
+            return ExitCode::from(if is_hook { 0 } else { 1 });
         }
     };
     let result = match cli.cmd {

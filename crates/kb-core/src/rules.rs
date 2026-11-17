@@ -310,17 +310,29 @@ const NO_PROMPT_YET: &str = "no user.prompt on this board yet (UserPromptSubmit 
 /// (docs/board-v2.md section 12.4).
 pub const BOARD_START_SOURCE: &str = "board.start";
 
+/// `detail.source` of the `session.start` written after a compaction. Compaction can happen
+/// in the middle of a turn, so that row does not start the rules' turn (docs/hooks.md
+/// section 2.4).
+pub const COMPACT_SOURCE: &str = "compact";
+
 /// Where the rules' current turn starts (docs/hooks.md section 2.4): just after the board's
-/// latest `turn.summary` written by `kb hook stop` (actor `hook`; the one of `kb board tidy`
-/// is written mid-turn by the agent and is not an end). Without one, at the board's start.
-/// `user.prompt` and `turn_started_at` do not move it: a wake turn, a message sent while the
-/// agent is busy, and a turn interrupted with Esc (no Stop) do not cut the range.
+/// latest start marker, which is any of
+/// - a `turn.summary` written by `kb hook stop` (actor `hook`; the one of `kb board tidy` is
+///   written mid-turn by the agent and is not an end);
+/// - a `session.start` whose `detail.source` is not `compact` (a session that starts, resumes,
+///   is cleared or forked starts between turns; a compaction may come mid-turn);
+/// - the `user.prompt` of `kb board start` (`detail.source` `board.start`; it is written only
+///   when the board is created or reopened, so no row of the current turn precedes it).
+///
+/// Without any, at the board's start. Other `user.prompt` rows and `turn_started_at` do not
+/// move it: a wake turn, a message sent while the agent is busy, and a turn interrupted with
+/// Esc (no Stop) do not cut the range.
 ///
 /// Activity rows compare by id: the stop hook writes its check rows and the summary in one
 /// transaction, so they share `at`, and the summary is the transaction's last row; ids keep
 /// that order, and a `tool.use` row a background hook writes after the stop belongs to the
 /// next turn (as it would by time). Tables without an activity id (`card_note.created_at`,
-/// the cards' `closed_at` and `updated_at`) compare with the summary's `at`.
+/// the cards' `closed_at` and `updated_at`) compare with the marker's `at`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TurnStart {
     /// Activity rows with a larger id belong to the turn (0: every row of the board).
@@ -333,10 +345,16 @@ pub struct TurnStart {
 pub async fn turn_start(conn: &mut PgConnection, board_id: i64) -> Result<TurnStart> {
     let row: Option<(i64, DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, at FROM activity
-         WHERE board_id = $1 AND verb = 'turn.summary' AND actor = 'hook'
+         WHERE board_id = $1
+           AND ((verb = 'turn.summary' AND actor = 'hook')
+                OR (verb = 'session.start' AND actor = 'hook'
+                    AND (detail->>'source') IS DISTINCT FROM $2)
+                OR (verb = 'user.prompt' AND detail->>'source' = $3))
          ORDER BY id DESC LIMIT 1",
     )
     .bind(board_id)
+    .bind(COMPACT_SOURCE)
+    .bind(BOARD_START_SOURCE)
     .fetch_optional(&mut *conn)
     .await?;
     Ok(row.map_or_else(TurnStart::default, |(id, at)| TurnStart {
@@ -487,8 +505,8 @@ pub async fn check_turn(
         RuleResult::skipped(RuleId::R3, levels, NO_PROMPT_YET)
     };
 
-    // R4: cards that entered a done lane this turn need a result. Before the board's first
-    // end of a turn, every card in a done lane is checked.
+    // R4: cards that entered a done lane this turn need a result. When the board has no start
+    // marker of a turn yet, every card in a done lane is checked.
     let missing: Vec<(i32, String)> = sqlx::query_as(
         "SELECT c.seq, c.title FROM card c JOIN lane l ON l.id = c.lane_id
          WHERE c.board_id = $1 AND l.kind = 'done'

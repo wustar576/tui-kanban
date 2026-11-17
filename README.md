@@ -126,7 +126,11 @@ bash scripts/setup.sh      # macOS (not yet verified on a real machine)
 The script generates random database passwords into `.env`, starts the PostgreSQL container
 (`127.0.0.1:55432`), writes `~/.config/kb/config.toml`, builds `kb` with
 `cargo build --release` and applies the schema. It can be run again; it keeps existing
-passwords and data. Put `target/release` on your `PATH`: the hooks run `kb` directly.
+passwords and data. Then put `kb` in `~/.cargo/bin`, which rustup already has on your
+`PATH`: run `cargo install --path crates/kb --locked` in the project folder, or link
+`~/.cargo/bin/kb` to `target/release/kb`. The hooks run `kb` directly. A `PATH` line in
+`~/.zprofile` is read only by login shells, so hooks of a session started another way may not
+find `kb` there.
 
 Install the Claude Code plugin. This repository is itself a plugin marketplace named
 `tui-kanban`:
@@ -137,8 +141,11 @@ claude plugin install kb@tui-kanban
 ```
 
 The plugin holds only the hooks and the `/kb:kb` skill. It does not install `kb` or the
-database; the setup script above does. To install the plugin from your local checkout
-instead, run `claude plugin install kb --marketplace <project folder>`.
+database; the setup script above does. If you install the plugin first, the agent is told
+at session start that `kb` is missing, and `/kb:kb` offers to install it: after you agree,
+the agent clones the repository, runs the setup script and
+`cargo install --path crates/kb --locked`, then starts the board. To install the plugin from your local checkout instead, run
+`claude plugin install kb --marketplace <project folder>`.
 
 To turn on the model judge, run `/plugin configure kb@tui-kanban` once in Claude Code and
 enter the API key, or pass `{"judge_api_key": "<key>"}` to

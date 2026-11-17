@@ -190,7 +190,8 @@ Write-Step 'kb db status'
 Assert-ExitCode 'kb db status'
 
 Write-Host ''
-Write-Host "Done. Add $(Split-Path -Parent $Kb) to PATH, or call $Kb directly." -ForegroundColor Green
+Write-Host "Done. kb is at $Kb." -ForegroundColor Green
+Write-Host 'Put it in ~/.cargo/bin, which is on PATH: cargo install --path crates/kb --locked'
 Write-Host ''
 Write-Host 'kb db migrate (and cargo test) need KB_ADMIN_URL; it is not in the config file.'
 Write-Host "Set it only in the shell where you need it. The password is KB_ADMIN_PASSWORD in $EnvFile."

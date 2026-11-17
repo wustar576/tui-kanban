@@ -1318,7 +1318,14 @@ fn workspace_resolution_order() {
     assert!(resolve::parse_hc_get(r#"{"labels":{}}"#, "t1").is_none());
     assert!(resolve::parse_hc_get("not json", "t1").is_none());
 
-    let cwd = Path::new(r"D:\Project\tui_kanban");
+    // docs/cli.md section 2.4: the name is the last component of the folder's absolute
+    // path on the machine where the session runs, so the folder must be absolute here.
+    let folder = if cfg!(windows) {
+        r"D:\Project\tui_kanban"
+    } else {
+        "/srv/project/tui_kanban"
+    };
+    let cwd = Path::new(folder);
     let manual = resolve::resolve_workspace(Some("手動"), Some(ctx.clone()), cwd);
     assert_eq!(
         (manual.key.as_str(), manual.name.as_str()),
@@ -1333,7 +1340,7 @@ fn workspace_resolution_order() {
     let dir = resolve::resolve_workspace(None, None, cwd);
     assert_eq!(
         (dir.key.as_str(), dir.name.as_str()),
-        (r"dir:D:\Project\tui_kanban", "tui_kanban")
+        (format!("dir:{folder}").as_str(), "tui_kanban")
     );
 }
 

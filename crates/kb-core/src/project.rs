@@ -20,8 +20,9 @@
 //!   and compared exactly elsewhere;
 //! - the spellings of the same Windows drive (`C:` and `\\?\C:`) are the same.
 //!
-//! Then every path is resolved through symbolic links (when it exists on disk; macOS
-//! `/var` vs `/private/var`) and compared again. The file is scratch when either comparison
+//! Then every path is resolved through symbolic links (macOS `/var` vs `/private/var`) and
+//! compared again; a path that does not exist yet is resolved through its nearest existing
+//! folder, followed by the rest of its components. The file is scratch when either comparison
 //! puts it in a scratch place and neither comparison grants the exception. Every case that
 //! cannot be decided is not scratch, so R5 never loses an edit to doubt: no path, a relative
 //! path without a hook `cwd`, a path that stays relative.
@@ -56,6 +57,20 @@ pub fn is_scratch(project: Option<&str>, cwd: Option<&str>, path: &str) -> bool 
 
 /// [`is_scratch`] with the given places.
 pub fn is_scratch_in(places: &Places, project: Option<&str>, cwd: Option<&str>, path: &str) -> bool {
+    is_scratch_with(places, project, cwd, path, &|p| {
+        std::fs::canonicalize(p).ok()
+    })
+}
+
+/// [`is_scratch_in`] with the given way of resolving an existing path through symbolic links
+/// (`None` when the path does not exist).
+fn is_scratch_with(
+    places: &Places,
+    project: Option<&str>,
+    cwd: Option<&str>,
+    path: &str,
+    canonicalize: &dyn Fn(&Path) -> Option<PathBuf>,
+) -> bool {
     let Some(file) = absolute_file(cwd, path) else {
         return false;
     };
@@ -71,12 +86,12 @@ pub fn is_scratch_in(places: &Places, project: Option<&str>, cwd: Option<&str>, 
         temp: temp.map(key),
         home: home.map(key),
     };
-    let canonical = |p: &Path| std::fs::canonicalize(p).ok().map(|p| key(&p));
-    let resolved = resolve(&file).map(|f| View {
-        file: key(&f),
-        project: project.as_deref().and_then(canonical),
-        temp: temp.and_then(canonical),
-        home: home.and_then(canonical),
+    let resolved_key = |p: &Path| resolve(p, canonicalize).map(|p| key(&p));
+    let resolved = resolved_key(&file).map(|f| View {
+        file: f,
+        project: project.as_deref().and_then(resolved_key),
+        temp: temp.and_then(resolved_key),
+        home: home.and_then(resolved_key),
     });
     let views: Vec<&View> = std::iter::once(&literal).chain(resolved.as_ref()).collect();
     let mut in_place = false;
@@ -153,14 +168,20 @@ fn non_empty(s: Option<&str>) -> Option<&str> {
     s.map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// The file resolved through symbolic links: the file itself, or else its folder plus its
-/// name (a file that no longer exists). `None` when neither exists.
-fn resolve(file: &Path) -> Option<PathBuf> {
-    if let Ok(p) = std::fs::canonicalize(file) {
-        return Some(p);
-    }
-    let parent = std::fs::canonicalize(file.parent()?).ok()?;
-    Some(parent.join(file.file_name()?))
+/// An absolute path resolved through symbolic links: its longest existing part resolved,
+/// followed by the rest of its components (they do not exist, so they are not links). A
+/// file or folder that does not exist yet thus resolves through its nearest existing
+/// folder. `None` when no part of it exists.
+fn resolve(path: &Path, canonicalize: &dyn Fn(&Path) -> Option<PathBuf>) -> Option<PathBuf> {
+    path.ancestors().find_map(|existing| {
+        let real = canonicalize(existing)?;
+        let rest = path.strip_prefix(existing).ok()?;
+        Some(if rest.as_os_str().is_empty() {
+            real
+        } else {
+            real.join(rest)
+        })
+    })
 }
 
 /// `file` is `root` or below it.
@@ -361,18 +382,103 @@ mod tests {
         assert!(is_scratch(Some(PROJECT), None, &file.to_string_lossy()));
     }
 
-    #[test]
-    fn links_are_resolved() {
-        // A scratch place reached through a symbolic link (as macOS /var is /private/var),
-        // when the platform lets the test create one (Windows needs a privilege for it).
-        let base = std::env::temp_dir().join(format!(
-            "kb-project-test-{}-{}",
+    /// A new, empty folder in the temporary folder.
+    fn fresh_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kb-project-{name}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_new_file_resolves_through_its_nearest_existing_folder() {
+        // The macOS case on any platform, with a simulated file system: `<root>var` is a
+        // link to `<root>private/var`, the temporary folder is spelled through the link
+        // (TMPDIR), the board's project folder is spelled for real (getcwd), and only the
+        // project folder exists below the temporary folder.
+        let root = if cfg!(windows) { r"C:\" } else { "/" };
+        let link = PathBuf::from(p(root, &["var"]));
+        let real = PathBuf::from(p(root, &["private", "var"]));
+        let temp = p(&link.to_string_lossy(), &["folders", "xx", "T"]);
+        let real_temp = p(&real.to_string_lossy(), &["folders", "xx", "T"]);
+        let project = p(&real_temp, &["proj"]);
+        let hook_cwd = p(&temp, &["proj"]);
+        let existing = PathBuf::from(&project);
+        let canonicalize = |path: &Path| -> Option<PathBuf> {
+            let target = match path.strip_prefix(&link) {
+                Ok(rest) if rest.as_os_str().is_empty() => real.clone(),
+                Ok(rest) => real.join(rest),
+                Err(_) => path.to_path_buf(),
+            };
+            existing.starts_with(&target).then_some(target)
+        };
+        let places = Places {
+            temp: Some(PathBuf::from(&temp)),
+            home: None,
+        };
+        let s = |path: &str| {
+            is_scratch_with(
+                &places,
+                Some(project.as_str()),
+                Some(hook_cwd.as_str()),
+                path,
+                &canonicalize,
+            )
+        };
+        // Neither `src/main.rs` nor `src/` exists: the project's file still counts.
+        assert!(!s("src/main.rs"));
+        assert!(!s(&p(&hook_cwd, &["src", "main.rs"])));
+        assert!(!s(&p(&project, &["src", "main.rs"])));
+        // New files elsewhere in the temporary folder stay scratch, in either spelling.
+        assert!(s(&p(&temp, &["scratch-1", "notes.md"])));
+        assert!(s(&p(&real_temp, &["scratch-1", "notes.md"])));
+        assert!(s("../scratch-1/notes.md"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_file_of_a_project_reached_through_a_real_link_counts() {
+        // The macOS case with a real link: the temporary folder is spelled through the link,
+        // the board's project folder for real, and the edited file and its folder do not
+        // exist yet.
+        let base = fresh_dir("new-file");
+        let real = base.join("real");
+        let link = base.join("link");
+        std::fs::create_dir_all(real.join("proj")).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let places = Places {
+            temp: Some(link.clone()),
+            home: None,
+        };
+        let project = std::fs::canonicalize(real.join("proj")).unwrap();
+        let project = project.to_string_lossy().to_string();
+        let hook_cwd = link.join("proj").to_string_lossy().to_string();
+        let s = |path: &str| {
+            is_scratch_in(
+                &places,
+                Some(project.as_str()),
+                Some(hook_cwd.as_str()),
+                path,
+            )
+        };
+        let project_file = s("src/main.rs");
+        let other_file = s(&link.join("new").join("notes.md").to_string_lossy());
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(!project_file);
+        assert!(other_file);
+    }
+
+    #[test]
+    fn links_are_resolved() {
+        // A scratch place reached through a symbolic link (as macOS /var is /private/var),
+        // when the platform lets the test create one (Windows needs a privilege for it).
+        let base = fresh_dir("links");
         let real = base.join("real");
         std::fs::create_dir_all(real.join("proj")).unwrap();
         std::fs::write(real.join("a.txt"), "x").unwrap();
@@ -403,6 +509,9 @@ mod tests {
             // A project in the place spelled through the link, its file spelled for real.
             assert!(!s(&link.join("proj"), &real.join("proj").join("b.txt")));
             assert!(!s(&real.join("proj"), &link.join("proj").join("b.txt")));
+            // A file of the project in a folder that does not exist yet.
+            let new = link.join("proj").join("src").join("main.rs");
+            assert!(!s(&real.join("proj"), &new));
         }
         let _ = std::fs::remove_dir_all(&base);
     }

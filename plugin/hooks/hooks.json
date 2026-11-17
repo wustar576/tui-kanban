@@ -2,12 +2,12 @@
   "hooks": {
     "SessionStart": [
       { "hooks": [
-        { "type": "command", "command": "kb hook session-start", "timeout": 10 },
+        { "type": "command", "command": "kb hook session-start || echo '[kb] The kb plugin is installed, but the kb program was not found on PATH, so the kanban board cannot work. Tell the user this once. Only the user can install it, by typing /kb:kb. Do not invoke /kb:kb yourself.'", "timeout": 10 },
         { "type": "command", "command": "kb", "args": ["hook", "wait"], "async": true, "asyncRewake": true, "timeout": 86400 }
       ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "kb hook prompt", "timeout": 10 }] }
+      { "hooks": [{ "type": "command", "command": "kb hook prompt || cd .", "timeout": 10 }] }
     ],
     "PreToolUse": [
       { "matcher": "Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion",
@@ -15,17 +15,17 @@
     ],
     "PostToolUse": [
       { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
-        "hooks": [{ "type": "command", "command": "kb hook tool-used", "async": true }] }
+        "hooks": [{ "type": "command", "command": "kb hook tool-used || cd .", "async": true }] }
     ],
     "Stop": [
       { "hooks": [
-        { "type": "command", "command": "kb hook stop", "timeout": 15 },
+        { "type": "command", "command": "kb hook stop || cd .", "timeout": 15 },
         { "type": "command", "command": "kb", "args": ["hook", "judge"], "async": true, "asyncRewake": true, "timeout": 60 },
         { "type": "command", "command": "kb", "args": ["hook", "wait"], "async": true, "asyncRewake": true, "timeout": 86400 }
       ] }
     ],
     "SessionEnd": [
-      { "hooks": [{ "type": "command", "command": "kb hook session-end", "timeout": 10 }] }
+      { "hooks": [{ "type": "command", "command": "kb hook session-end || cd .", "timeout": 10 }] }
     ]
   }
 }
