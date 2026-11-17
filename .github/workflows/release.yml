@@ -1,0 +1,82 @@
+# Builds kb for Windows and macOS and attaches the archives to a GitHub Release.
+# Runs when a tag that starts with "v" is pushed to the public repository only.
+# A tag with a hyphen (for example v0.1.0-test.1) becomes a pre-release.
+# The binaries are not signed with a developer certificate.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  create:
+    if: github.repository == 'wustar576/tui-kanban'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" \
+              --notes "Prebuilt kb for Windows and macOS. Not signed with a developer certificate." \
+              "${flags[@]}"
+
+  build:
+    needs: create
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Rust target
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --target "${{ matrix.target }}"
+          rustup default stable
+
+      - name: Build
+        shell: bash
+        run: cargo build --release --locked --package kb --target "${{ matrix.target }}"
+
+      - name: Package
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          name="kb-$TAG-$TARGET"
+          dir="target/$TARGET/release"
+          if [ "$RUNNER_OS" = Windows ]; then
+            archive="$name.zip"
+            7z a "$archive" "./$dir/kb.exe" >/dev/null
+            sha256sum "$archive" > "$archive.sha256"
+          else
+            archive="$name.tar.gz"
+            tar -czf "$archive" -C "$dir" kb
+            shasum -a 256 "$archive" > "$archive.sha256"
+          fi
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+
+      - name: Upload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" "$ARCHIVE" "$ARCHIVE.sha256" --repo "$GITHUB_REPOSITORY" --clobber
