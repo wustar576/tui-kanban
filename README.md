@@ -114,9 +114,11 @@ the config file, so an agent cannot use it by accident.
 - Rust 1.94 or later (`cargo`).
 - Claude Code. On Windows, Git Bash, which Claude Code uses to run hook commands.
 
-Run the setup script from the project folder:
+Get the project and run the setup script from the project folder:
 
 ```sh
+git clone https://github.com/wustar576/tui-kanban.git
+cd tui-kanban
 pwsh scripts/setup.ps1     # Windows
 bash scripts/setup.sh      # macOS (not yet verified on a real machine)
 ```
@@ -126,12 +128,17 @@ The script generates random database passwords into `.env`, starts the PostgreSQ
 `cargo build --release` and applies the schema. It can be run again; it keeps existing
 passwords and data. Put `target/release` on your `PATH`: the hooks run `kb` directly.
 
-Install the Claude Code plugin. The project folder is itself a plugin marketplace named
+Install the Claude Code plugin. This repository is itself a plugin marketplace named
 `tui-kanban`:
 
 ```sh
-claude plugin install kb --marketplace <project folder>
+claude plugin marketplace add wustar576/tui-kanban
+claude plugin install kb@tui-kanban
 ```
+
+The plugin holds only the hooks and the `/kb:kb` skill. It does not install `kb` or the
+database; the setup script above does. To install the plugin from your local checkout
+instead, run `claude plugin install kb --marketplace <project folder>`.
 
 To turn on the model judge, run `/plugin configure kb@tui-kanban` once in Claude Code and
 enter the API key, or pass `{"judge_api_key": "<key>"}` to

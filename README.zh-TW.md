@@ -102,9 +102,11 @@ TUI 只寫入兩種資料：回答與留言，而且是以只讀的資料庫角�
 - Rust 1.94 以上（`cargo`）。
 - Claude Code。Windows 另外需要 Git Bash，Claude Code 用它執行 hook 的指令。
 
-在專案資料夾執行安裝腳本：
+取得專案，並在專案資料夾執行安裝腳本：
 
 ```sh
+git clone https://github.com/wustar576/tui-kanban.git
+cd tui-kanban
 pwsh scripts/setup.ps1     # Windows
 bash scripts/setup.sh      # macOS（還沒有在實機上驗證）
 ```
@@ -113,11 +115,15 @@ bash scripts/setup.sh      # macOS（還沒有在實機上驗證）
 `~/.config/kb/config.toml`，以 `cargo build --release` 建置 `kb`，並套用資料表。它可以重複
 執行，不改變既有的密碼與資料。把 `target/release` 加入 `PATH`：hook 直接執行 `kb`。
 
-安裝 Claude Code 外掛。專案資料夾本身是名為 `tui-kanban` 的外掛 marketplace：
+安裝 Claude Code 外掛。這個 repository 本身是名為 `tui-kanban` 的外掛 marketplace：
 
 ```sh
-claude plugin install kb --marketplace <專案資料夾>
+claude plugin marketplace add wustar576/tui-kanban
+claude plugin install kb@tui-kanban
 ```
+
+外掛只包含 hook 與技能 `/kb:kb`。它不安裝 `kb` 與資料庫；那是上面的安裝腳本的工作。要改從
+本機的專案資料夾安裝外掛時，執行 `claude plugin install kb --marketplace <專案資料夾>`。
 
 要開啟模型評測時，在 Claude Code 裡輸入一次 `/plugin configure kb@tui-kanban` 並填入金鑰，
 或把 `{"judge_api_key": "<金鑰>"}` 傳給 `claude plugin configure kb@tui-kanban --values-stdin`。
