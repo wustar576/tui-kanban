@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [
+        { "type": "command", "command": "kb hook session-start", "timeout": 10 },
+        { "type": "command", "command": "kb", "args": ["hook", "wait"], "async": true, "asyncRewake": true, "timeout": 86400 }
+      ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "kb hook prompt", "timeout": 10 }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion",
+        "hooks": [{ "type": "command", "command": "kb hook pre-tool", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [{ "type": "command", "command": "kb hook tool-used", "async": true }] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "kb hook stop", "timeout": 15 },
+        { "type": "command", "command": "kb", "args": ["hook", "judge"], "async": true, "asyncRewake": true, "timeout": 60 },
+        { "type": "command", "command": "kb", "args": ["hook", "wait"], "async": true, "asyncRewake": true, "timeout": 86400 }
+      ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "kb hook session-end", "timeout": 10 }] }
+    ]
+  }
+}

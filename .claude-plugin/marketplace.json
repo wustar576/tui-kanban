@@ -1,0 +1,14 @@
+{
+  "name": "tui-kanban",
+  "description": "The kb kanban plugin for Claude Code: hooks and the /kb:kb command.",
+  "owner": {
+    "name": "tui-kanban"
+  },
+  "plugins": [
+    {
+      "name": "kb",
+      "source": "./plugin",
+      "description": "Terminal kanban that the agent writes to and a human watches. Type /kb:kb to start the board for this session."
+    }
+  ]
+}

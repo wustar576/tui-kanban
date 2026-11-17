@@ -1,0 +1,18 @@
+{
+  "name": "kb",
+  "description": "Terminal kanban that the agent writes to and a human watches. Type /kb to start the board for this session.",
+  "version": "0.1.0",
+  "author": {
+    "name": "tui-kanban"
+  },
+  "license": "MIT",
+  "userConfig": {
+    "judge_api_key": {
+      "type": "string",
+      "title": "Judge API key",
+      "description": "API key of the decision model that checks the agent's last message after each turn (Gemini Decisions API). Leave it empty to keep the model judge off.",
+      "sensitive": true,
+      "required": false
+    }
+  }
+}

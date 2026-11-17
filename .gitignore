@@ -1,0 +1,14 @@
+# git worktree 隔離工作區
+.worktrees/
+
+# Rust 建置產物
+target/
+
+# 本機資料庫密碼（由 scripts/setup.ps1 或 scripts/setup.sh 產生）
+.env
+
+# 發布公開快照時額外禁止的字串（scripts/release.sh 讀取，不提交）
+.release-forbidden
+
+# Windows 當機傾印檔
+*.stackdump

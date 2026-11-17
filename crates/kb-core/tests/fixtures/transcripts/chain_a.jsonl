@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"11111111-aaaa","message":{"role":"user","content":"start"}}
+{"type":"continued-in","timestamp":"2026-11-15T09:00:00.000Z","sessionId":"11111111-aaaa","continuedInSessionId":"22222222-bbbb"}

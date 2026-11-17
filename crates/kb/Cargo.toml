@@ -1,0 +1,23 @@
+[package]
+name = "kb"
+description = "tui-kanban command line: agents write the board, humans watch it"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kb"
+path = "src/main.rs"
+
+[dependencies]
+kb-core.workspace = true
+kb-tui.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+url.workspace = true

@@ -1,0 +1,3 @@
+{"type":"user","sessionId":"22222222-bbbb","message":{"role":"user","content":"幫我修正登入逾時"}}
+{"type":"assistant","sessionId":"22222222-bbbb","message":{"role":"assistant","content":"好的"}}
+{"type":"continued-in","timestamp":"2026-11-16T03:28:08.567Z","sessionId":"22222222-bbbb","continuedInSessionId":"33333333-cccc"}

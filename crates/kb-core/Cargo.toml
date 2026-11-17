@@ -1,0 +1,30 @@
+[package]
+name = "kb-core"
+description = "tui-kanban core: config, database, model, writes, reads, workspace resolution"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+url.workspace = true
+# HTTP client of the model judge (src/judge.rs): blocking; TLS and root certificates from the
+# operating system (schannel on Windows, Security.framework on macOS, OpenSSL on Linux).
+ureq = { version = "3", default-features = false, features = ["native-tls-no-default"] }
+
+# Native process checks for the waiter (src/process.rs); both are already in the lock file.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
