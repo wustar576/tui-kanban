@@ -108,7 +108,7 @@ TUI 只寫入兩種資料：回答與留言，而且是以只讀的資料庫角�
 git clone https://github.com/wustar576/tui-kanban.git
 cd tui-kanban
 pwsh scripts/setup.ps1     # Windows
-bash scripts/setup.sh      # macOS（還沒有在實機上驗證）
+bash scripts/setup.sh      # macOS
 ```
 
 腳本產生隨機的資料庫密碼寫入 `.env`，啟動 PostgreSQL 容器（`127.0.0.1:55432`），寫入

@@ -120,7 +120,7 @@ Get the project and run the setup script from the project folder:
 git clone https://github.com/wustar576/tui-kanban.git
 cd tui-kanban
 pwsh scripts/setup.ps1     # Windows
-bash scripts/setup.sh      # macOS (not yet verified on a real machine)
+bash scripts/setup.sh      # macOS
 ```
 
 The script generates random database passwords into `.env`, starts the PostgreSQL container

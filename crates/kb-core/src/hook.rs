@@ -433,8 +433,8 @@ pub enum PreTool {
     Pass,
     /// The rule failed at level `warn`; `check.warn` was recorded.
     Warn(RuleResult),
-    /// The rule failed at level `block`; `check.block` was recorded. The text is for
-    /// standard error (exit code 2).
+    /// The rule failed at level `block`; `check.block` was recorded. The text is the
+    /// reason of the denial (`permissionDecisionReason`, docs/hooks.md section 3.3).
     Block(RuleResult, String),
 }
 

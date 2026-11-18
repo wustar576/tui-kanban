@@ -493,7 +493,7 @@ pub enum HookCmd {
     SessionStart,
     /// UserPromptSubmit: start a new turn; deliver answers and comments
     Prompt,
-    /// PreToolUse: rules R1 and R6 (exit 2 blocks the tool)
+    /// PreToolUse: rules R1 and R6 (a JSON "deny" blocks the tool)
     PreTool,
     /// PostToolUse: record the tool use (no notification)
     ToolUsed,

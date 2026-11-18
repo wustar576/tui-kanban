@@ -3,10 +3,11 @@
 //!
 //! Reads one JSON object from standard input, uses its `session_id` as the session key,
 //! and never fails the session: every unexpected problem is exit code 0 with a
-//! `kb hook:` message on standard error (section 2.3). Only `pre-tool` exits with 2, when a
-//! rule at level `block` fails, and `wait` and `judge`, to wake the session (docs/board-v2.md
-//! section 13.3, docs/hooks.md section 3.7). `judge` prints nothing on failure. All JSON
-//! output is ASCII-only (section 2.2).
+//! `kb hook:` message on standard error (section 2.3). `pre-tool` blocks a tool through its
+//! JSON output (`permissionDecision: "deny"`) with exit code 0 (section 3.3). Only `wait` and
+//! `judge` exit with 2, to wake the session (docs/board-v2.md section 13.3, docs/hooks.md
+//! section 3.7). `judge` prints nothing on failure. All JSON output is ASCII-only
+//! (section 2.2).
 //!
 //! A session without a board hears nothing about the board (docs/board-v2.md section
 //! 12.2): no hook prints anything for it, except after an automatic adoption (12.8).
@@ -61,6 +62,23 @@ impl Reply {
             stdout: Some(output::json_ascii(
                 &json!({ "decision": "block", "reason": reason }),
             )),
+            ..Reply::default()
+        }
+    }
+
+    /// A `PreToolUse` denial (docs/hooks.md section 3.3): exit code 0 with the decision on
+    /// standard output. Claude Code shows the reason to the agent, as it shows the standard
+    /// error of exit code 2; exit code 0 lets the hook command end with `|| cd .`
+    /// (docs/board-v2.md section 12.12).
+    fn deny(reason: String) -> Reply {
+        Reply {
+            stdout: Some(output::json_ascii(&json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }))),
             ..Reply::default()
         }
     }
@@ -464,8 +482,10 @@ async fn pre_tool(input: &HookInput) -> Result<Reply, Error> {
             }
         }
         PreTool::Block(_, text) => {
-            reply.stderr.push(text);
-            reply.code = 2;
+            // Rules-file warnings stay on standard error; the agent sees only the reason.
+            let stderr = std::mem::take(&mut reply.stderr);
+            reply = Reply::deny(text);
+            reply.stderr = stderr;
         }
     }
     Ok(reply)

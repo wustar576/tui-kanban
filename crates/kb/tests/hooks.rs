@@ -113,7 +113,15 @@ fn json_out(o: &Output) -> Value {
         "hook output must be ASCII: {}",
         stdout(o)
     );
-    serde_json::from_slice(&o.stdout).expect("stdout is JSON")
+    // A hook that hits its connection time limit prints nothing on stdout and says why on
+    // stderr; show stderr so an intermittent failure names its cause.
+    serde_json::from_slice(&o.stdout).unwrap_or_else(|e| {
+        panic!(
+            "stdout is not JSON ({e}); stdout: {:?}; stderr: {}",
+            stdout(o),
+            stderr(o)
+        )
+    })
 }
 
 fn context(o: &Output, event: &str) -> String {
@@ -544,7 +552,7 @@ fn shell_hook_command(event: &str) -> Option<String> {
     Some(match event {
         "SessionStart" => format!("kb hook session-start || echo '{MISSING_KB_NOTICE}'"),
         "UserPromptSubmit" => "kb hook prompt || cd .".to_string(),
-        "PreToolUse" => "kb hook pre-tool".to_string(),
+        "PreToolUse" => "kb hook pre-tool || cd .".to_string(),
         "PostToolUse" => "kb hook tool-used || cd .".to_string(),
         "Stop" => "kb hook stop || cd .".to_string(),
         "SessionEnd" => "kb hook session-end || cd .".to_string(),
@@ -555,8 +563,8 @@ fn shell_hook_command(event: &str) -> Option<String> {
 #[test]
 fn plugin_matches_the_manual_settings_example() {
     // docs/board-v2.md section 12.12: same bindings on six events; `kb hook <event>`, followed
-    // by the notice on SessionStart and by `|| cd .` on four events (exit 0 when `kb` cannot
-    // run). Section 13.5: the waiter is `kb` + args ["hook", "wait"] (exec form), async with
+    // by the notice on SessionStart and by `|| cd .` on the five others (exit 0 when `kb`
+    // cannot run). Section 13.5: the waiter is `kb` + args ["hook", "wait"] (exec form), async with
     // asyncRewake and an explicit 24-hour timeout, on SessionStart and Stop.
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../");
     let read = |p: &str| std::fs::read_to_string(format!("{root}{p}")).unwrap();
@@ -732,15 +740,13 @@ fn hook_commands_without_kb_notice_once_and_stay_quiet() {
     };
     for event in HOOK_EVENTS {
         let cmd = shell_hook_command(event).unwrap();
-        // kb missing: SessionStart tells the agent; the others exit 0 without output, except
-        // pre-tool, which is not guarded (its exit code 2 blocks).
+        // kb missing: SessionStart tells the agent; the others exit 0 without output.
         let o = run(&cmd, &empty);
         match event {
             "SessionStart" => {
                 assert_eq!(o.status.code(), Some(0));
                 assert_eq!(stdout(&o).trim_end(), MISSING_KB_NOTICE);
             }
-            "PreToolUse" => assert_eq!(o.status.code(), Some(127), "{event}"),
             _ => {
                 assert_eq!(o.status.code(), Some(0), "{event}");
                 assert!(o.stdout.is_empty(), "{event}");
@@ -1308,6 +1314,26 @@ fn the_rules_turn_ends_only_at_a_stop_that_ends_it() {
 
 // --- pre-tool (3.3) -----------------------------------------------------------------------
 
+/// A `PreToolUse` denial: exit 0, and stdout is exactly the `hookSpecificOutput` object with
+/// `permissionDecision: "deny"`. Returns `permissionDecisionReason`.
+fn deny_reason(o: &Output) -> String {
+    let v = json_out(o);
+    let reason = v["hookSpecificOutput"]["permissionDecisionReason"]
+        .as_str()
+        .expect("permissionDecisionReason")
+        .to_string();
+    assert_eq!(
+        v,
+        json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }})
+    );
+    assert_eq!(stdout(o).trim_end().lines().count(), 1, "{}", stdout(o));
+    reason
+}
+
 #[test]
 fn pre_tool_warns_or_blocks_by_level() {
     migrate();
@@ -1322,16 +1348,16 @@ fn pre_tool_warns_or_blocks_by_level() {
     assert_eq!(activity(&s)[0]["verb"], "check.warn");
     assert_eq!(activity(&s)[0]["detail"]["rule"], "R1");
 
-    // R1 = block: exit 2, reason on stderr, check.block recorded.
+    // R1 = block: exit 0 with a JSON denial whose reason is the block text (exit code 0 so
+    // the hook command can end with `|| cd .`, docs/board-v2.md 12.12); check.block recorded.
     let block = rules_file(Some("[rules]\nR1 = \"block\"\nR6 = \"block\"\n"));
     let o = hook_with(kb().env("KB_RULES_FILE", &block), "pre-tool", &edit);
-    assert_eq!(o.status.code(), Some(2));
-    assert!(o.stdout.is_empty());
+    let reason = deny_reason(&o);
     assert!(
-        stderr(&o).starts_with("Kanban rules failed. Fix them, then try again.\nR1: "),
-        "{}",
-        stderr(&o)
+        reason.starts_with("Kanban rules failed. Fix them, then try again.\nR1: "),
+        "{reason}"
     );
+    assert!(o.stderr.is_empty(), "{}", stderr(&o));
     assert_eq!(activity(&s)[0]["verb"], "check.block");
 
     // R1 = off: nothing.
@@ -1347,12 +1373,22 @@ fn pre_tool_warns_or_blocks_by_level() {
     silent(&o);
     assert!(o.stderr.is_empty());
     let o = hook_with(kb().env("KB_RULES_FILE", &block), "pre-tool", &ask_tool);
-    assert_eq!(o.status.code(), Some(2));
     assert_eq!(
-        stderr(&o).trim_end(),
+        deny_reason(&o),
         "AskUserQuestion is disabled here. Ask through the board instead:\n  \
          kb ask --card <n> \"<question>\" --option \"<label>::<description>\" --option \"<label>\"\n\
          Then continue with work that does not depend on the answer."
+    );
+    assert!(o.stderr.is_empty(), "{}", stderr(&o));
+
+    // A rules-file warning stays on stderr; the denial on stdout is unchanged.
+    let block_bad = rules_file(Some("[rules]\nR6 = \"block\"\nR2 = \"loud\"\n"));
+    let o = hook_with(kb().env("KB_RULES_FILE", &block_bad), "pre-tool", &ask_tool);
+    assert!(deny_reason(&o).starts_with("AskUserQuestion is disabled here."));
+    assert!(
+        stderr(&o).contains("kb hook: warning:") && stderr(&o).contains("invalid level for R2"),
+        "{}",
+        stderr(&o)
     );
 
     // Other tools are not checked, even when blocking; no database needed.

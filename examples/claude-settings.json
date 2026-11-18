@@ -11,7 +11,7 @@
     ],
     "PreToolUse": [
       { "matcher": "Edit|Write|MultiEdit|NotebookEdit|AskUserQuestion",
-        "hooks": [{ "type": "command", "command": "kb hook pre-tool", "timeout": 10 }] }
+        "hooks": [{ "type": "command", "command": "kb hook pre-tool || cd .", "timeout": 10 }] }
     ],
     "PostToolUse": [
       { "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",

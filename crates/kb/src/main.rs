@@ -63,7 +63,8 @@ fn main() -> ExitCode {
         }
     };
     let result = match cli.cmd {
-        // Hooks never fail the session: they handle every error themselves (exit 0 or 2).
+        // Hooks never fail the session: they handle every error themselves (exit 0; only
+        // `wait` and `judge` exit 2, to wake the session).
         Cmd::Hook { event } => return ExitCode::from(runtime.block_on(hook::run(event))),
         Cmd::Tui(args) => runtime.block_on(tui(args)).map(|text| (text, 0)),
         Cmd::Board {
