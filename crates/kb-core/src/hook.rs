@@ -791,6 +791,7 @@ mod tests {
             r.line(),
             "AskUserQuestion is disabled here. Ask through the board instead: \
              kb ask --card <n> \"<question>\" --option \"<label>::<description>\" --option \"<label>\" \
+             If no card covers the question, add one first: kb card add --lane <lane> --title \"<topic>\" --discuss \
              Then continue with work that does not depend on the answer."
         );
     }

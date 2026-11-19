@@ -64,7 +64,8 @@ impl Default for JudgeConfig {
             // still waited could pair its earlier message with the continuation's summary.
             summary_wait_ms: 2000,
             advice: QuestionConfig::new(0.3, 0.7),
-            waiting: QuestionConfig::new(0.5, 1.0),
+            // docs/board-v2.md section 23.3.
+            waiting: QuestionConfig::new(0.5, 0.7),
             offcard_work: QuestionConfig::new(0.5, 1.0),
             unconfirmed_work: QuestionConfig::new(0.5, 1.0),
         }
@@ -229,7 +230,7 @@ mod tests {
         assert_eq!(c.api_key_env, "KB_JUDGE_API_KEY");
         assert_eq!((c.timeout_ms, c.max_questions, c.summary_wait_ms), (8000, 40, 2000));
         assert_eq!(c.advice, QuestionConfig::new(0.3, 0.7));
-        assert_eq!(c.waiting, QuestionConfig::new(0.5, 1.0));
+        assert_eq!(c.waiting, QuestionConfig::new(0.5, 0.7));
         assert_eq!(c.offcard_work, QuestionConfig::new(0.5, 1.0));
         assert_eq!(c.unconfirmed_work, QuestionConfig::new(0.5, 1.0));
     }
@@ -257,7 +258,7 @@ record = 0.4
 wake = 1
 
 [judge.waiting]
-wake = 0.7
+wake = 0.9
 "#,
         );
         assert!(w.is_empty(), "{w:?}");
@@ -274,7 +275,7 @@ wake = 0.7
                 wake: 1.0
             }
         );
-        assert_eq!(c.waiting, QuestionConfig::new(0.5, 0.7));
+        assert_eq!(c.waiting, QuestionConfig::new(0.5, 0.9));
         assert_eq!(c.offcard_work, QuestionConfig::new(0.5, 1.0));
     }
 

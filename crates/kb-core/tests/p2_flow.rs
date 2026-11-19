@@ -728,13 +728,26 @@ async fn r1_and_r6_in_pre_tool_at_each_level() {
         PreTool::Pass
     );
 
-    // R6.
+    // R6: blocks by default (docs/board-v2.md 23.2).
+    assert!(
+        matches!(
+            hook::pre_tool(&mut conn, &session, "AskUserQuestion", &Levels::default())
+                .await
+                .unwrap(),
+            PreTool::Block(..)
+        ),
+        "R6 blocks by default"
+    );
     assert_eq!(
-        hook::pre_tool(&mut conn, &session, "AskUserQuestion", &Levels::default())
-            .await
-            .unwrap(),
-        PreTool::Pass,
-        "R6 is off by default"
+        hook::pre_tool(
+            &mut conn,
+            &session,
+            "AskUserQuestion",
+            &only(RuleId::R6, Level::Off)
+        )
+        .await
+        .unwrap(),
+        PreTool::Pass
     );
     assert!(matches!(
         hook::pre_tool(
@@ -760,6 +773,7 @@ async fn r1_and_r6_in_pre_tool_at_each_level() {
             text,
             "AskUserQuestion is disabled here. Ask through the board instead:\n  \
              kb ask --card <n> \"<question>\" --option \"<label>::<description>\" --option \"<label>\"\n\
+             If no card covers the question, add one first: kb card add --lane <lane> --title \"<topic>\" --discuss\n\
              Then continue with work that does not depend on the answer."
         ),
         other => panic!("{other:?}"),
@@ -1833,7 +1847,7 @@ fn rule_levels_from_file_text() {
             Level::Off,
             Level::Block,
             Level::Warn,
-            Level::Off,
+            Level::Block,
             // R7-R10 (docs/board-v2.md section 17.1).
             Level::Warn,
             Level::Warn,

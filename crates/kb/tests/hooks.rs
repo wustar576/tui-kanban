@@ -1366,20 +1366,28 @@ fn pre_tool_warns_or_blocks_by_level() {
     silent(&o);
     assert!(o.stderr.is_empty());
 
-    // R6: off by default; block gives the documented text.
+    // R6: block by default (docs/board-v2.md 23.2) with the documented text; off: nothing.
     let ask_tool =
         json!({"session_id": s, "tool_name": "AskUserQuestion", "tool_input": {"questions": []}});
-    let o = hook("pre-tool", &ask_tool);
+    for o in [
+        hook("pre-tool", &ask_tool),
+        hook_with(kb().env("KB_RULES_FILE", &block), "pre-tool", &ask_tool),
+    ] {
+        assert_eq!(
+            deny_reason(&o),
+            "AskUserQuestion is disabled here. Ask through the board instead:\n  \
+             kb ask --card <n> \"<question>\" --option \"<label>::<description>\" --option \"<label>\"\n\
+             If no card covers the question, add one first: kb card add --lane <lane> --title \"<topic>\" --discuss\n\
+             Then continue with work that does not depend on the answer."
+        );
+        assert!(o.stderr.is_empty(), "{}", stderr(&o));
+        assert_eq!(activity(&s)[0]["verb"], "check.block");
+        assert_eq!(activity(&s)[0]["detail"]["rule"], "R6");
+    }
+    let r6_off = rules_file(Some("[rules]\nR6 = \"off\"\n"));
+    let o = hook_with(kb().env("KB_RULES_FILE", &r6_off), "pre-tool", &ask_tool);
     silent(&o);
     assert!(o.stderr.is_empty());
-    let o = hook_with(kb().env("KB_RULES_FILE", &block), "pre-tool", &ask_tool);
-    assert_eq!(
-        deny_reason(&o),
-        "AskUserQuestion is disabled here. Ask through the board instead:\n  \
-         kb ask --card <n> \"<question>\" --option \"<label>::<description>\" --option \"<label>\"\n\
-         Then continue with work that does not depend on the answer."
-    );
-    assert!(o.stderr.is_empty(), "{}", stderr(&o));
 
     // A rules-file warning stays on stderr; the denial on stdout is unchanged.
     let block_bad = rules_file(Some("[rules]\nR6 = \"block\"\nR2 = \"loud\"\n"));
@@ -1408,10 +1416,10 @@ fn pre_tool_warns_or_blocks_by_level() {
     let o = hook_with(kb().env("KB_RULES_FILE", &block), "pre-tool", &edit);
     silent(&o);
 
-    // An invalid level falls back to the default and warns on stderr.
+    // An invalid level falls back to the default (R6: block) and warns on stderr.
     let bad = rules_file(Some("[rules]\nR6 = \"loud\"\n"));
     let o = hook_with(kb().env("KB_RULES_FILE", &bad), "pre-tool", &ask_tool);
-    silent(&o);
+    assert!(deny_reason(&o).starts_with("AskUserQuestion is disabled here."));
     assert!(
         stderr(&o).contains("invalid level for R6"),
         "{}",

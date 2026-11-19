@@ -661,21 +661,40 @@ fn waiting_respects_what_the_board_already_shows() {
         assert!(s.rows("judge.finding").is_empty(), "{which}");
     }
 
-    // A card that does not show it: a finding on it (record only by default).
+    // A card that does not show it: a finding on it. By default it wakes from 0.7
+    // (docs/board-v2.md 23.3).
     let model = waits_on("#1 登入逾時");
     let s = Session::new("cardwait", model.rules(""));
+    s.prompt("繼續");
+    s.stop();
+    let o = s.judge("要用哪一種結構？");
+    assert_eq!(o.status.code(), Some(2));
+    assert!(
+        text(&o.stderr).starts_with(
+            "[kb] card #1 \"登入逾時\": your last message ends with a question for the user"
+        ),
+        "{}",
+        text(&o.stderr)
+    );
+    let f = &s.rows("judge.finding")[0];
+    assert_eq!(f["card_id"], s.card_id(1));
+    assert_eq!(f["detail"]["question"], "waiting");
+    assert_eq!(f["detail"]["band"], "wake");
+
+    // With the wake threshold at 1 the same finding is only recorded.
+    let model = waits_on("#1 登入逾時");
+    let s = Session::new("cardrecord", model.rules("[judge.waiting]\nwake = 1.0\n"));
     s.prompt("繼續");
     s.stop();
     silent(&s.judge("要用哪一種結構？"));
     let f = &s.rows("judge.finding")[0];
     assert_eq!(f["card_id"], s.card_id(1));
-    assert_eq!(f["detail"]["question"], "waiting");
     assert_eq!(f["detail"]["band"], "record");
 
-    // "none" on a board without questions or blocked cards: a board-level finding; with
-    // the wake threshold lowered it wakes.
+    // "none" on a board without questions or blocked cards: a board-level finding. It
+    // wakes too, and says what to do when no card covers the question (23.4).
     let model = waits_on(none);
-    let s = Session::new("boardwait", model.rules("[judge.waiting]\nwake = 0.7\n"));
+    let s = Session::new("boardwait", model.rules(""));
     s.prompt("繼續");
     s.stop();
     let o = s.judge("你想先做哪一個？");
@@ -684,6 +703,14 @@ fn waiting_respects_what_the_board_already_shows() {
         "[kb] your last message ends with a question for the user, but the board shows no open \
          question and no blocked card."
     ));
+    assert!(
+        text(&o.stderr).contains(
+            "If no card covers the question, add one first: kb card add --lane <lane> --title \
+             \"<topic>\" --discuss"
+        ),
+        "{}",
+        text(&o.stderr)
+    );
     let f = &s.rows("judge.finding")[0];
     assert_eq!(f["card_id"], Value::Null);
     assert_eq!(f["detail"]["message"], "最後的回覆在等使用者回答，看板上沒有提問，也沒有卡片標為阻擋");
@@ -785,7 +812,8 @@ fn findings_stay_out_of_the_agent_views_and_settle_in_the_tui() {
     let which = "#1 登入逾時";
     let model = FakeModel::answering(vec![
         ("advice_1", noul(0.5)),
-        ("waiting", noul(0.9)),
+        // In the record band: from 0.7 it would wake (docs/board-v2.md 23.3).
+        ("waiting", noul(0.6)),
         ("waiting_which", choice(which, json!({which: 0.9}))),
     ]);
     let s = Session::new("views", model.rules(""));

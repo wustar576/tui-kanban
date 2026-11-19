@@ -83,8 +83,9 @@ impl RuleId {
             | RuleId::R9
             | RuleId::R10
             | RuleId::R11 => Level::Warn,
-            RuleId::R4 => Level::Block,
-            RuleId::R3 | RuleId::R6 => Level::Off,
+            // R6: docs/board-v2.md section 23.2.
+            RuleId::R4 | RuleId::R6 => Level::Block,
+            RuleId::R3 => Level::Off,
         }
     }
 
@@ -434,9 +435,11 @@ pub fn r6_violation(levels: &Levels) -> RuleResult {
     )
 }
 
-/// Text given to the agent when R6 blocks (docs/hooks.md section 4.1).
+/// Text given to the agent when R6 blocks (docs/hooks.md section 4.1; docs/board-v2.md
+/// section 23.4).
 pub const R6_TEXT: &str = "AskUserQuestion is disabled here. Ask through the board instead:\n  \
 kb ask --card <n> \"<question>\" --option \"<label>::<description>\" --option \"<label>\"\n\
+If no card covers the question, add one first: kb card add --lane <lane> --title \"<topic>\" --discuss\n\
 Then continue with work that does not depend on the answer.";
 
 /// R2-R5 and R7-R11 for the board's current turn (the `stop` hook and `kb board check`),

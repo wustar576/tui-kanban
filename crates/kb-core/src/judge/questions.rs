@@ -285,7 +285,7 @@ pub fn advice_text(seq: i32, title: &str) -> String {
     )
 }
 
-pub const WAITING_BOARD_TEXT: &str = "your last message ends with a question for the user, but the board shows no open question and no blocked card. Put it on the board: kb ask --card <n> \"<question>\" --option ... ; kb card block <n> --reason \"waiting for answer to question <id>\"";
+pub const WAITING_BOARD_TEXT: &str = "your last message ends with a question for the user, but the board shows no open question and no blocked card. Put it on the board: kb ask --card <n> \"<question>\" --option ... ; kb card block <n> --reason \"waiting for answer to question <id>\". If no card covers the question, add one first: kb card add --lane <lane> --title \"<topic>\" --discuss";
 
 pub fn waiting_card_text(seq: i32, title: &str) -> String {
     format!(
@@ -886,10 +886,14 @@ mod tests {
         };
         // Below the record threshold: nothing.
         assert!(run(&cards, &config, 0.49, "#2 b").is_empty());
-        // A card: a finding on it, record only by default (wake 1).
-        let f = run(&cards, &config, 0.9, "#2 b");
+        // A card: a finding on it; by default recorded from 0.5 and waking from 0.7
+        // (docs/board-v2.md 23.3).
+        let f = run(&cards, &config, 0.69, "#2 b");
         assert_eq!(f.len(), 1);
         assert_eq!((f[0].topic, f[0].card, f[0].band), (Topic::Waiting, Some((102, 2)), Band::Record));
+        let f = run(&cards, &config, 0.9, "#2 b");
+        assert_eq!(f.len(), 1);
+        assert_eq!((f[0].topic, f[0].card, f[0].band), (Topic::Waiting, Some((102, 2)), Band::Wake));
         assert!(f[0].text.starts_with("card #2 \"b\": your last message ends with a question"));
         // The card is blocked, or has an open question: no finding.
         cards[1].blocked = true;
@@ -908,9 +912,10 @@ mod tests {
         // A blocked card that is finished does not count.
         cards[0].finished = true;
         assert_eq!(run(&cards, &config, 0.9, WAITING_NONE).len(), 1);
-        // With a wake threshold below 1.
-        config.waiting.wake = 0.7;
+        // The board-level finding wakes at the threshold; a threshold of 1 only records.
         assert_eq!(run(&cards, &config, 0.7, WAITING_NONE)[0].band, Band::Wake);
+        config.waiting.wake = 1.0;
+        assert_eq!(run(&cards, &config, 0.99, WAITING_NONE)[0].band, Band::Record);
         // No cards: board level.
         let p = plan(&[], "", &config);
         let f = findings(&p, &answers(&[("waiting", prob(0.6))]), &[], &config);
