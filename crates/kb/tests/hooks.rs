@@ -52,7 +52,10 @@ fn kb() -> Command {
         .env("KB_RULES_FILE", rules_file(None))
         .env_remove("KB_SESSION")
         .env_remove("CLAUDE_CODE_SESSION_ID")
-        .env_remove("HC_TERMINAL_ID")
+        .env_remove("KB_TERMINAL_ID")
+        .env_remove("KB_TERMINAL_SPACE")
+        .env_remove("KB_TERMINAL_TAB")
+        .env_remove("KB_WORKSPACE_NAME")
         .env_remove("CLAUDE_ENV_FILE");
     cmd
 }
@@ -223,6 +226,8 @@ fn usage_guide() -> String {
 }
 
 const EMPTY_BOARD: &str = "This session has an empty board. Design it now with \"kb board init\".";
+const START_TERMINAL_HINT: &str = "hint: no terminal is recorded for this board. If you run in a \
+     terminal workspace (tabs or panes), run \"kb board terminal\" to see how to record it.";
 
 /// Starts the session's board the way `/kb` does (`--new`: other test boards share the
 /// folder).
@@ -269,9 +274,11 @@ fn session_start_injects_context_only_for_a_started_board() {
         "{out}"
     );
     assert!(first.contains("專案"), "{first}");
+    // No terminal is known: the last line tells the agent how to record it
+    // (docs/board-v2.md section 26.5).
     assert_eq!(
         out.trim_end(),
-        format!("{first}\n\n{guide}\n\n{EMPTY_BOARD}")
+        format!("{first}\n\n{guide}\n\n{EMPTY_BOARD}\n\n{START_TERMINAL_HINT}")
     );
     let v = board_json(&s);
     assert_eq!(v["board"]["title"], "");
@@ -478,9 +485,9 @@ fn board_start_lists_candidates_and_adopt_takes_over() {
     assert!(out.contains(" created for session "), "{out}");
     assert_eq!(board_json(&third)["board"]["prev_board_id"], id);
 
-    // The session key of start/adopt never comes from the herdr terminal.
+    // The session key of start/adopt never comes from the terminal (KB_TERMINAL_ID).
     let o = kb()
-        .env("HC_TERMINAL_ID", unique("t"))
+        .env("KB_TERMINAL_ID", unique("t"))
         .args(["board", "start"])
         .output()
         .unwrap();
@@ -696,7 +703,10 @@ fn skill_command_prints_the_marker_only_without_kb() {
             .env("KB_WRITER_URL", refused)
             .env("KB_READER_URL", refused)
             .env_remove("KB_SESSION")
-            .env_remove("HC_TERMINAL_ID")
+            .env_remove("KB_TERMINAL_ID")
+            .env_remove("KB_TERMINAL_SPACE")
+            .env_remove("KB_TERMINAL_TAB")
+            .env_remove("KB_WORKSPACE_NAME")
             .output()
             .unwrap()
     };
@@ -2166,7 +2176,7 @@ fn question_commands() {
 // --- session key source 4 (docs/hooks.md 5.3) ---------------------------------------------
 
 #[test]
-fn session_key_from_herdr_terminal() {
+fn session_key_from_terminal_id() {
     migrate();
     let terminal = unique("t");
     let s = unique("term");
@@ -2176,16 +2186,13 @@ fn session_key_from_herdr_terminal() {
         .unwrap();
     rt.block_on(async {
         let mut conn = kb_core::db::connect(&test_url(Role::Writer)).await.unwrap();
-        let ws = kb_core::resolve::resolve_workspace(
-            None,
-            Some(kb_core::resolve::HerdrContext {
-                space: unique("space"),
-                tab: None,
-                terminal: terminal.clone(),
-                name: "herdr".into(),
-            }),
-            std::path::Path::new("."),
-        );
+        let space = unique("space");
+        let here = kb_core::resolve::terminal_env(|k| match k {
+            "KB_TERMINAL_ID" => Some(terminal.clone()),
+            "KB_TERMINAL_SPACE" => Some(space.clone()),
+            _ => None,
+        });
+        let ws = kb_core::resolve::workspace_here(None, here, std::path::Path::new("."));
         let args = kb_core::write::BoardInit {
             title: Some("終端機的看板".into()),
             ..Default::default()
@@ -2195,12 +2202,12 @@ fn session_key_from_herdr_terminal() {
             .unwrap();
     });
     let out = ok(kb()
-        .env("HC_TERMINAL_ID", &terminal)
+        .env("KB_TERMINAL_ID", &terminal)
         .args(["board", "show"]));
     assert!(out.starts_with("board: 終端機的看板 [active]"), "{out}");
     // Sources 1-3 win over the terminal.
     let o = kb()
-        .env("HC_TERMINAL_ID", &terminal)
+        .env("KB_TERMINAL_ID", &terminal)
         .env("KB_SESSION", unique("other"))
         .args(["board", "show"])
         .output()
@@ -2212,7 +2219,7 @@ fn session_key_from_herdr_terminal() {
     );
     // A terminal without an active board: no session.
     let o = kb()
-        .env("HC_TERMINAL_ID", unique("none"))
+        .env("KB_TERMINAL_ID", unique("none"))
         .args(["card", "note", "1", "x"])
         .output()
         .unwrap();

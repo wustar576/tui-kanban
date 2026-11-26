@@ -56,7 +56,7 @@ pub fn v2_snapshot() -> BoardSnapshot {
     snap.no_epic = None;
     snap.open_question_count = 3;
     snap.discussing_count = 1;
-    snap.board.herdr_terminal = Some("t9".into());
+    snap.board.terminal_id = Some("t9".into());
     snap
 }
 

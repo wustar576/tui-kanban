@@ -70,23 +70,43 @@ impl CardJudge {
     }
 
     /// The lines the card screen shows under the blocked row: label and explanation.
-    pub fn detail_lines(&self) -> Vec<(&'static str, Style, String)> {
+    pub fn detail_lines(&self) -> Vec<(String, Style, String)> {
         let mut out = Vec::new();
         if let Some(p) = self.waiting {
             out.push((
-                "等回覆：",
+                format!("{}：", judge_label(JudgeTag::Waiting)),
                 WAITING_STYLE.add_modifier(Modifier::BOLD),
-                format!("agent 在對話裡等你回覆（評測 {p:.2}）"),
+                judge_explanation(JudgeTag::Waiting, p),
             ));
         }
         if let Some(p) = self.advice {
             out.push((
-                "建議未記錄：",
+                format!("{}：", judge_label(JudgeTag::Advice)),
                 ADVICE_STYLE.add_modifier(Modifier::BOLD),
-                format!("agent 的回覆對這張卡片提出建議或決定，卡片沒有紀錄（評測 {p:.2}）"),
+                judge_explanation(JudgeTag::Advice, p),
             ));
         }
         out
+    }
+}
+
+/// The label of a model-judge tag (docs/tui.md section 12.2). Also in
+/// `kb board show --json --findings` (docs/ui-contract.md section 5).
+pub fn judge_label(tag: JudgeTag) -> &'static str {
+    match tag {
+        JudgeTag::Waiting => "等回覆",
+        JudgeTag::Advice => "建議未記錄",
+    }
+}
+
+/// The explanation after the label on the card screen, with the probability (docs/tui.md
+/// section 12.4). Also in `kb board show --json --findings` (docs/ui-contract.md section 5).
+pub fn judge_explanation(tag: JudgeTag, p: f64) -> String {
+    match tag {
+        JudgeTag::Waiting => format!("agent 在對話裡等你回覆（評測 {p:.2}）"),
+        JudgeTag::Advice => {
+            format!("agent 的回覆對這張卡片提出建議或決定，卡片沒有紀錄（評測 {p:.2}）")
+        }
     }
 }
 

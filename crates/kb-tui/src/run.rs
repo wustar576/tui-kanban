@@ -103,7 +103,7 @@ pub async fn resolve_start(
         let id = latest_in_scope(conn, &scope).await?;
         return Ok((scope, id));
     }
-    // HC_TERMINAL_ID: the workspace of this herdr space, if it has an active board.
+    // KB_TERMINAL_SPACE: the workspace of this space, if it has an active board.
     if let Some((_, Some(ws))) = read::workspace_for_current_terminal(conn).await? {
         let scope = Scope::Workspaces(vec![ws.id]);
         if let Some(id) = latest_in_scope(conn, &scope).await? {

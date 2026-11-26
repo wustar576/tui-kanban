@@ -13,7 +13,7 @@ use sqlx::{Connection, Transaction};
 use crate::error::{Error, Result};
 use crate::model::{
     Board, BoardStatus, Card, CauseKind, CauseRef, Epic, Lane, LaneKind, LinkKind, NoteKind,
-    Origin, Outcome, QuestionStatus,
+    Origin, Outcome, QuestionStatus, WorkspaceSource,
 };
 use crate::read::{CommentView, QuestionView};
 use crate::resolve::{TerminalInfo, WorkspaceTarget};
@@ -672,7 +672,7 @@ fn epics_created(n: usize) -> String {
 }
 
 /// `kb board init` (docs/cli.md section 4.3). `resolve_workspace` is called only when the
-/// session has no board yet, so `hc` runs only for new boards.
+/// session has no board yet, so the workspace is resolved only for new boards.
 pub async fn board_init(
     conn: &mut PgConnection,
     session_key: &str,
@@ -772,6 +772,29 @@ async fn board_create(
     commit(tx, &board, changes, message).await
 }
 
+/// Creates the workspace `key`, or renames the existing one to `name` (docs/cli.md section
+/// 2.4). Returns its id.
+pub(crate) async fn upsert_workspace(
+    tx: &mut PgConnection,
+    key: &str,
+    name: &str,
+    source: WorkspaceSource,
+) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "INSERT INTO workspace (key, name, source) VALUES ($1, $2, $3)
+         ON CONFLICT (key) DO UPDATE
+           SET name = EXCLUDED.name,
+               updated_at = CASE WHEN workspace.name = EXCLUDED.name
+                                 THEN workspace.updated_at ELSE now() END
+         RETURNING id",
+    )
+    .bind(key)
+    .bind(name)
+    .bind(source)
+    .fetch_one(&mut *tx)
+    .await?)
+}
+
 /// Upserts the workspace of `ws` and inserts a board without lanes.
 pub(crate) async fn insert_board(
     tx: &mut PgConnection,
@@ -781,25 +804,13 @@ pub(crate) async fn insert_board(
     ws: &WorkspaceTarget,
     cwd: Option<&str>,
 ) -> Result<Board> {
-    let workspace_id: i64 = sqlx::query_scalar(
-        "INSERT INTO workspace (key, name, source) VALUES ($1, $2, $3)
-         ON CONFLICT (key) DO UPDATE
-           SET name = EXCLUDED.name,
-               updated_at = CASE WHEN workspace.name = EXCLUDED.name
-                                 THEN workspace.updated_at ELSE now() END
-         RETURNING id",
-    )
-    .bind(&ws.key)
-    .bind(&ws.name)
-    .bind(ws.source)
-    .fetch_one(&mut *tx)
-    .await?;
+    let workspace_id = upsert_workspace(tx, &ws.key, &ws.name, ws.source).await?;
     // The terminal fields come from the current terminal whatever the workspace source
     // (docs/board-v2.md section 12.7).
     let terminal = ws.terminal.as_ref();
     Ok(sqlx::query_as::<_, Board>(
-        "INSERT INTO board (workspace_id, session_key, title, goal, herdr_space, herdr_tab,
-                            herdr_terminal, cwd)
+        "INSERT INTO board (workspace_id, session_key, title, goal, terminal_space, terminal_tab,
+                            terminal_id, cwd)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *",
     )
     .bind(workspace_id)
@@ -825,7 +836,7 @@ pub(crate) async fn refresh_terminal(
         return Ok(());
     };
     sqlx::query(
-        "UPDATE board SET herdr_terminal = $2, herdr_space = $3, herdr_tab = $4 WHERE id = $1",
+        "UPDATE board SET terminal_id = $2, terminal_space = $3, terminal_tab = $4 WHERE id = $1",
     )
     .bind(board_id)
     .bind(&t.terminal)
@@ -834,6 +845,117 @@ pub(crate) async fn refresh_terminal(
     .execute(&mut *tx)
     .await?;
     Ok(())
+}
+
+/// What `kb board terminal --id` records (docs/board-v2.md section 26.3): values trimmed;
+/// a blank `--space`, `--tab` or `--workspace-name` counts as not given.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardTerminal {
+    pub id: String,
+    pub space: Option<String>,
+    pub tab: Option<String>,
+    /// Only with a space.
+    pub workspace_name: Option<String>,
+}
+
+/// `kb board terminal` with a blank `--id`.
+pub const TERMINAL_ID_BLANK: &str = "--id must not be blank";
+
+impl BoardTerminal {
+    /// Normalizes the options; fails when `id` is blank.
+    pub fn new(
+        id: &str,
+        space: Option<&str>,
+        tab: Option<&str>,
+        workspace_name: Option<&str>,
+    ) -> Result<Self> {
+        let text = |v: Option<&str>| v.map(str::trim).filter(|v| !v.is_empty()).map(String::from);
+        let id = text(Some(id)).ok_or_else(|| Error::invalid(TERMINAL_ID_BLANK))?;
+        let space = text(space);
+        let workspace_name = space.as_ref().and(text(workspace_name));
+        Ok(BoardTerminal {
+            id,
+            space,
+            tab: text(tab),
+            workspace_name,
+        })
+    }
+}
+
+/// `kb board terminal --id` (docs/board-v2.md section 26.3): writes the three terminal
+/// fields; with a space, moves the board to the workspace `space:<id>`. Nothing changes
+/// (no activity, no `rev`) when every value is already the board's.
+pub async fn board_terminal(
+    conn: &mut PgConnection,
+    session_key: &str,
+    args: BoardTerminal,
+) -> Result<WriteOutcome> {
+    let (mut tx, board) = begin(conn, session_key, false).await?;
+    let fields_same = board.terminal_id.as_deref() == Some(args.id.as_str())
+        && board.terminal_space == args.space
+        && board.terminal_tab == args.tab;
+    // The workspace: (name, moved, renamed).
+    let mut workspace: Option<(String, bool, bool)> = None;
+    if let Some(space) = &args.space {
+        let key = format!("space:{space}");
+        let before: Option<String> =
+            sqlx::query_scalar("SELECT name FROM workspace WHERE key = $1")
+                .bind(&key)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let name = args
+            .workspace_name
+            .clone()
+            .or_else(|| before.clone())
+            .unwrap_or_else(|| space.clone());
+        let renamed = before.as_ref().is_some_and(|b| *b != name);
+        let workspace_id = upsert_workspace(&mut tx, &key, &name, WorkspaceSource::Space).await?;
+        let moved = workspace_id != board.workspace_id;
+        if moved {
+            sqlx::query("UPDATE board SET workspace_id = $2 WHERE id = $1")
+                .bind(board.id)
+                .bind(workspace_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        workspace = Some((name, moved, renamed));
+    }
+    let ws_changed = workspace.as_ref().is_some_and(|(_, m, r)| *m || *r);
+    if fields_same && !ws_changed {
+        tx.rollback().await?;
+        return Ok(unchanged(&board, "terminal unchanged".into()));
+    }
+    let info = TerminalInfo {
+        terminal: args.id.clone(),
+        space: args.space.clone(),
+        tab: args.tab.clone(),
+    };
+    refresh_terminal(&mut tx, board.id, Some(&info)).await?;
+    let mut detail = json!({ "terminal": args.id });
+    if let Some(space) = &args.space {
+        detail["space"] = json!(space);
+    }
+    if let Some(tab) = &args.tab {
+        detail["tab"] = json!(tab);
+    }
+    let mut message = format!("terminal {} recorded for board {}", args.id, board.id);
+    if let Some((name, moved, renamed)) = &workspace {
+        if *moved || *renamed {
+            detail["workspace"] = json!(name);
+        }
+        if *moved {
+            message.push_str(&format!(", moved to workspace {name}"));
+        } else if *renamed {
+            message.push_str(&format!(", workspace renamed to {name}"));
+        }
+    }
+    commit(
+        tx,
+        &board,
+        vec![Change::board("board.terminal", detail)],
+        message,
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------------------
@@ -918,7 +1040,7 @@ pub async fn start_candidates(
     Ok(sqlx::query_as::<_, Board>(
         "SELECT * FROM board
          WHERE session_key <> $1
-           AND CASE WHEN $2::text IS NOT NULL THEN herdr_terminal = $2 ELSE cwd = $3 END
+           AND CASE WHEN $2::text IS NOT NULL THEN terminal_id = $2 ELSE cwd = $3 END
            AND (status = 'active' OR archived_at >= now() - interval '7 days')
          ORDER BY updated_at DESC, id DESC
          LIMIT $4",
@@ -2718,4 +2840,29 @@ pub async fn card_order(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// docs/board-v2.md section 26.2.
+    #[test]
+    fn board_terminal_values_are_trimmed_and_blank_ones_dropped() {
+        let t = BoardTerminal::new(" t2b ", Some(" spc1 "), Some(""), Some(" Acme ")).unwrap();
+        assert_eq!(
+            t,
+            BoardTerminal {
+                id: "t2b".into(),
+                space: Some("spc1".into()),
+                tab: None,
+                workspace_name: Some("Acme".into()),
+            }
+        );
+        // A name without a space is dropped.
+        let t = BoardTerminal::new("t2b", Some("  "), None, Some("Acme")).unwrap();
+        assert_eq!((t.space, t.workspace_name), (None, None));
+        let e = BoardTerminal::new("  ", Some("spc1"), None, None).unwrap_err();
+        assert_eq!(e.to_string(), TERMINAL_ID_BLANK);
+    }
 }

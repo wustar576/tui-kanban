@@ -33,7 +33,10 @@ fn kb(session: &str) -> Command {
         .env("KB_ADMIN_URL", test_url(Role::Admin))
         .env_remove("KB_SESSION")
         .env_remove("CLAUDE_CODE_SESSION_ID")
-        .env_remove("HC_TERMINAL_ID")
+        .env_remove("KB_TERMINAL_ID")
+        .env_remove("KB_TERMINAL_SPACE")
+        .env_remove("KB_TERMINAL_TAB")
+        .env_remove("KB_WORKSPACE_NAME")
         .args(["--session", session]);
     cmd
 }

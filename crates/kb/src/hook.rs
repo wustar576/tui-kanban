@@ -240,9 +240,10 @@ async fn forget_next(conn: &mut PgConnection, board_id: i64) {
     let _ = kb_core::write::forget_next(conn, board_id).await;
 }
 
-/// The current terminal's fields (docs/board-v2.md section 12.7); runs `hc get`.
+/// The current terminal's fields (docs/board-v2.md sections 12.7 and 24), from
+/// `KB_TERMINAL_ID`, `KB_TERMINAL_SPACE` and `KB_TERMINAL_TAB`.
 fn current_terminal() -> Option<TerminalInfo> {
-    resolve::current_hc().map(|hc| hc.terminal)
+    resolve::current_terminal()
 }
 
 /// Automatic adoption (docs/board-v2.md section 12.8). True when a predecessor's board

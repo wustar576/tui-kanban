@@ -6,7 +6,7 @@
 //! - [`layout`]: geometry shared by both, so selections stay visible.
 //! - [`markdown`]: Markdown of card bodies and notes, wrapped by display width.
 //! - [`text`]: display-width helpers and the Chinese labels.
-//! - [`notify`]: after 「在 session 裡說明」, focusing the agent's pane (`herdr-app`).
+//! - [`notify`]: after 「在 session 裡說明」, running `KB_FOCUS_CMD` to focus the agent's pane.
 //! - [`run`]: the only IO: database reads (as `kb_reader`), answering a question, adding a
 //!   comment, the `LISTEN` connection, the terminal, and `--snapshot`.
 //!

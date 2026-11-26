@@ -11,7 +11,7 @@ use kb_core::events::{BoardEvent, EventListener, ListenEvent};
 use kb_core::hook::{self, PreTool, Stop};
 use kb_core::model::{Board, BoardStatus, NoteKind, Outcome, QuestionStatus};
 use kb_core::read;
-use kb_core::resolve::{self, HerdrContext, SessionSource, TerminalInfo, WorkspaceTarget};
+use kb_core::resolve::{self, SessionSource, SpaceContext, TerminalInfo, WorkspaceTarget};
 use kb_core::rules::{self, Level, Levels, RuleId};
 use kb_core::write::{self, BoardInit, BoardStartArgs, CardAdd, OptionSpec, StartStatus};
 use kb_core::{Error, PgConnection, Role};
@@ -1951,11 +1951,9 @@ async fn session_start_needs_a_board_that_board_start_creates() {
     let ws = || {
         resolve::resolve_workspace(
             None,
-            Some(HerdrContext {
+            Some(SpaceContext {
                 space: space.clone(),
-                tab: None,
-                terminal: terminal.clone(),
-                name: "herdr".into(),
+                name: "space".into(),
             }),
             Path::new("."),
         )
@@ -1989,8 +1987,8 @@ async fn session_start_needs_a_board_that_board_start_creates() {
     let b1 = start.board.clone().unwrap();
     assert_eq!(b1.title, "");
     assert_eq!(b1.cwd.as_deref(), Some("D:/work"));
-    assert_eq!(b1.herdr_terminal.as_deref(), Some(terminal.as_str()));
-    assert_eq!(b1.herdr_space.as_deref(), Some(space.as_str()));
+    assert_eq!(b1.terminal_id.as_deref(), Some(terminal.as_str()));
+    assert_eq!(b1.terminal_space.as_deref(), Some(space.as_str()));
     assert_eq!(b1.prev_board_id, None);
     // The start also starts the turn: a turn key, its start time, a user.prompt.
     assert_eq!(
@@ -2025,7 +2023,7 @@ async fn session_start_needs_a_board_that_board_start_creates() {
         .await
         .unwrap_err();
     assert!(matches!(err, Error::NoSession));
-    let env = |k: &str| (k == "HC_TERMINAL_ID").then(|| "t9".to_string());
+    let env = |k: &str| (k == "KB_TERMINAL_ID").then(|| "t9".to_string());
     assert_eq!(
         resolve::session_source(None, env).unwrap(),
         SessionSource::Terminal("t9".into())
@@ -2036,7 +2034,7 @@ async fn session_start_needs_a_board_that_board_start_creates() {
     );
 
     // Undelivered answers are delivered by session-start; the terminal fields are refreshed
-    // to the current terminal, even without a herdr space (section 12.7).
+    // to the current terminal, even without a terminal space (section 12.7).
     let args = BoardInit {
         title: Some("有泳道".into()),
         lanes: Some(write::parse_lanes(LANES).unwrap()),
@@ -2060,11 +2058,8 @@ async fn session_start_needs_a_board_that_board_start_creates() {
     assert_eq!(started.board.id, b1.id);
     assert_eq!(started.delivery.answers.len(), 1);
     assert_eq!(started.delivery.answers[0].question.id, q);
-    assert_eq!(
-        started.board.herdr_terminal.as_deref(),
-        Some(moved.as_str())
-    );
-    assert_eq!(started.board.herdr_space, None);
+    assert_eq!(started.board.terminal_id.as_deref(), Some(moved.as_str()));
+    assert_eq!(started.board.terminal_space, None);
     assert_eq!(
         activity_verbs(&mut conn, b1.id).await[..2],
         ["question.deliver", "session.start"]
@@ -2074,7 +2069,7 @@ async fn session_start_needs_a_board_that_board_start_creates() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(kept.board.herdr_terminal.as_deref(), Some(moved.as_str()));
+    assert_eq!(kept.board.terminal_id.as_deref(), Some(moved.as_str()));
 
     // A second session in the same terminal sees the first board as a candidate and gets
     // no board, unless --new; then prev_board_id links them.
@@ -2106,7 +2101,7 @@ async fn session_start_needs_a_board_that_board_start_creates() {
     let b2 = fresh.board.unwrap();
     assert_eq!(b2.prev_board_id, Some(b1.id));
     // The terminal is stored even with a manual workspace (section 12.7).
-    assert_eq!(b2.herdr_terminal.as_deref(), Some(moved.as_str()));
+    assert_eq!(b2.terminal_id.as_deref(), Some(moved.as_str()));
 
     // session-end archives (open cards: incomplete); session-start reopens and clears the
     // archive summary (section 12.6).
@@ -2246,7 +2241,7 @@ async fn board_adopt_moves_a_board_to_the_current_session() {
     assert_eq!(adoption.board.status, BoardStatus::Active);
     assert_eq!(adoption.board.summary, None);
     assert_eq!(
-        adoption.board.herdr_terminal.as_deref(),
+        adoption.board.terminal_id.as_deref(),
         Some(t.terminal.as_str())
     );
     assert!(

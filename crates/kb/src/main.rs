@@ -17,7 +17,7 @@ use kb_core::write::{self, BoardInit, CardAdd, CardEdit, LinkTarget};
 use kb_core::{Config, Error, PgConnection, Result, Role, db};
 
 use cli::{
-    BoardCmd, CardCmd, Cli, Cmd, DbCmd, EpicCmd, LaneCmd, LinkCmd, QuestionCmd, TuiArgs,
+    BoardCmd, CardCmd, Cli, Cmd, DbCmd, EpicCmd, HumanCmd, LaneCmd, LinkCmd, QuestionCmd, TuiArgs,
     WorkspaceCmd,
 };
 
@@ -36,6 +36,18 @@ fn main() -> ExitCode {
         let _ = <Cli as clap::CommandFactory>::command().print_help();
         return ExitCode::from(2);
     };
+    // --findings needs --json. --json is global and may come before the subcommand, where
+    // clap's `requires` does not see it, so the check is here (docs/ui-contract.md 5).
+    if matches!(
+        cmd,
+        Cmd::Board {
+            cmd: BoardCmd::Show { findings: true, .. }
+        }
+    ) && !cli.json
+    {
+        eprintln!("error: --findings requires --json");
+        return ExitCode::from(2);
+    }
     let cli = Parsed {
         session: cli.session,
         json: cli.json,
@@ -67,6 +79,8 @@ fn main() -> ExitCode {
         // `wait` and `judge` exit 2, to wake the session).
         Cmd::Hook { event } => return ExitCode::from(runtime.block_on(hook::run(event))),
         Cmd::Tui(args) => runtime.block_on(tui(args)).map(|text| (text, 0)),
+        // No database and no session (docs/cli.md section 4.21).
+        Cmd::Version => Ok((output::version(cli.json), 0)),
         Cmd::Board {
             cmd: BoardCmd::Check { history: false, .. },
         } => runtime.block_on(board_check(cli.session.as_deref(), cli.json)),
@@ -216,7 +230,7 @@ async fn run(cli: Parsed) -> Result<String> {
     }
 
     match cli.cmd {
-        Cmd::Tui(_) | Cmd::Hook { .. } => unreachable!("handled in main"),
+        Cmd::Tui(_) | Cmd::Hook { .. } | Cmd::Version => unreachable!("handled in main"),
 
         Cmd::Db {
             cmd: DbCmd::Migrate { database, yes },
@@ -257,15 +271,15 @@ async fn run(cli: Parsed) -> Result<String> {
                 BoardCmd::Start { title, goal, new } => {
                     let session = start_session_key(session_flag.as_deref())?;
                     let cwd = current_dir()?;
-                    let hc = resolve::current_hc();
-                    let terminal = hc.as_ref().map(|h| h.terminal.clone());
+                    let here = resolve::current_terminal_env();
+                    let terminal = here.terminal.clone();
                     let args = write::BoardStartArgs {
                         title,
                         goal: goal.map(|g| read_text_arg(&g)).transpose()?,
                         new,
                         cwd: Some(cwd.to_string_lossy().to_string()),
                     };
-                    let resolve_ws = || resolve::workspace_here(None, hc, &cwd);
+                    let resolve_ws = || resolve::workspace_here(None, here, &cwd);
                     let start = write::board_start(
                         &mut conn,
                         &session,
@@ -278,7 +292,7 @@ async fn run(cli: Parsed) -> Result<String> {
                 }
                 BoardCmd::Adopt { target } => {
                     let session = start_session_key(session_flag.as_deref())?;
-                    let terminal = resolve::current_hc().map(|h| h.terminal);
+                    let terminal = resolve::current_terminal();
                     let adoption =
                         write::board_adopt(&mut conn, &session, &target, terminal.as_ref()).await?;
                     if json {
@@ -294,6 +308,43 @@ async fn run(cli: Parsed) -> Result<String> {
                         .ok_or_else(|| Error::NoBoard(b.session_key.clone()))?;
                     forget_next(&mut conn, b.id).await;
                     Ok(format!("{first}\n\n{}", guide::board_context(&snap)))
+                }
+                BoardCmd::Terminal {
+                    id,
+                    space,
+                    tab,
+                    workspace_name,
+                } => {
+                    let session = session_key(&mut conn, source()?).await?;
+                    // Without --id: read only (docs/board-v2.md section 26.4).
+                    let Some(id) = id else {
+                        let board = session_board(&mut conn, &session).await?;
+                        return Ok(if json {
+                            output::json(&serde_json::json!({
+                                "board_id": board.id,
+                                "session_key": board.session_key,
+                                "terminal_id": board.terminal_id,
+                                "terminal_space": board.terminal_space,
+                                "terminal_tab": board.terminal_tab,
+                            }))
+                        } else {
+                            let line = output::terminal_line(
+                                board.id,
+                                board.terminal_id.as_deref(),
+                                board.terminal_space.as_deref(),
+                                board.terminal_tab.as_deref(),
+                            );
+                            format!("{line}\n\n{}", guide::TERMINAL_HOWTO)
+                        });
+                    };
+                    let args = write::BoardTerminal::new(
+                        &id,
+                        space.as_deref(),
+                        tab.as_deref(),
+                        workspace_name.as_deref(),
+                    )?;
+                    let out = write::board_terminal(&mut conn, &session, args).await?;
+                    write_result(&mut conn, &out, json, false).await
                 }
                 BoardCmd::Init {
                     title,
@@ -316,19 +367,27 @@ async fn run(cli: Parsed) -> Result<String> {
                     // The terminal is stored whatever the workspace source
                     // (docs/board-v2.md section 12.7).
                     let resolve_ws = || {
-                        resolve::workspace_here(workspace.as_deref(), resolve::current_hc(), &cwd)
+                        resolve::workspace_here(
+                            workspace.as_deref(),
+                            resolve::current_terminal_env(),
+                            &cwd,
+                        )
                     };
                     let out = write::board_init(&mut conn, &session, args, resolve_ws).await?;
                     write_result(&mut conn, &out, json, false).await
                 }
-                BoardCmd::Show { all } => {
+                BoardCmd::Show { all, findings } => {
                     let session = session_key(&mut conn, source()?).await?;
                     let board = session_board(&mut conn, &session).await?;
                     let snap = read::board_snapshot(&mut conn, board.id)
                         .await?
                         .ok_or_else(|| Error::NoBoard(board.session_key.clone()))?;
-                    // --json is always complete (docs/board-v2.md section 15.1).
-                    Ok(if json {
+                    // --json is always complete (docs/board-v2.md section 15.1). Findings
+                    // only with --findings, for human screens (docs/ui-contract.md 5).
+                    Ok(if json && findings {
+                        let active = read::active_judge_findings(&mut conn, board.id).await?;
+                        output::json(&output::board_with_findings(&snap, &active))
+                    } else if json {
                         output::json(&snap)
                     } else {
                         output::board(&snap, all)
@@ -633,7 +692,18 @@ async fn run(cli: Parsed) -> Result<String> {
             let board = session_board(&mut conn, &session).await?;
             let items = read::recent_activity(&mut conn, board.id, limit).await?;
             Ok(if json {
-                output::json(&items)
+                // Each item also carries `text`, the line a human screen shows (docs/cli.md 4.19).
+                let with_text: Vec<serde_json::Value> = items
+                    .iter()
+                    .map(|a| {
+                        let mut v = serde_json::to_value(a).unwrap_or_default();
+                        if let Some(map) = v.as_object_mut() {
+                            map.insert("text".into(), kb_tui::text::activity_text(a).into());
+                        }
+                        v
+                    })
+                    .collect();
+                output::json(&with_text)
             } else {
                 output::activity(&items)
             })
@@ -669,6 +739,8 @@ async fn run(cli: Parsed) -> Result<String> {
                 output::inbox(&inbox)
             })
         }
+
+        Cmd::Human { cmd } => human(&config, session_flag.as_deref(), cmd, json).await,
 
         Cmd::Question { cmd } => {
             let source = source()?;
@@ -749,7 +821,12 @@ async fn board_start_output(
         .await?
         .ok_or_else(|| Error::NoBoard(key.clone()))?;
     forget_next(conn, board.id).await;
-    Ok(format!("{first}\n\n{}", guide::board_context(&snap)))
+    let mut text = format!("{first}\n\n{}", guide::board_context(&snap));
+    // No terminal known: tell the agent how to record it (docs/board-v2.md section 26.5).
+    if snap.board.terminal_id.is_none() {
+        text = format!("{text}\n\n{}", guide::START_TERMINAL_HINT);
+    }
+    Ok(text)
 }
 
 /// The agent's context receives the board without a `next:` line: forget the last one so
@@ -757,6 +834,51 @@ async fn board_start_output(
 /// 5 without the column) only means the next write prints the line anyway.
 async fn forget_next(conn: &mut PgConnection, board_id: i64) {
     let _ = write::forget_next(conn, board_id).await;
+}
+
+/// `kb human answer` / `kb human comment` (docs/cli.md section 4.20): the writes `kb tui`
+/// makes, on a reader connection, so they can do nothing the TUI cannot.
+async fn human(
+    config: &Config,
+    session_flag: Option<&str>,
+    cmd: HumanCmd,
+    json: bool,
+) -> Result<String> {
+    let mut conn = db::connect(config.url(Role::Reader)?).await?;
+    match cmd {
+        HumanCmd::Answer {
+            id,
+            options,
+            text,
+            chat,
+        } => {
+            kb_core::answer::answer_question(&mut conn, id, &options, chat, text.as_deref())
+                .await?;
+            let status = if chat { "chat" } else { "answered" };
+            Ok(if json {
+                output::json(&serde_json::json!({ "question": id, "status": status }))
+            } else if chat {
+                format!("question {id} set to chat")
+            } else {
+                format!("question {id} answered")
+            })
+        }
+        HumanCmd::Comment { card, text } => {
+            let seq = model::parse_card_seq(&card)?;
+            let source = session_source(session_flag)?;
+            let session = session_key(&mut conn, source).await?;
+            let board = session_board(&mut conn, &session).await?;
+            let detail = read::card_detail(&mut conn, board.id, seq)
+                .await?
+                .ok_or(Error::CardNotFound(seq))?;
+            let note = kb_core::comment::add_comment(&mut conn, detail.card.id, &text).await?;
+            Ok(if json {
+                output::json(&serde_json::json!({ "note": note, "card": seq }))
+            } else {
+                format!("comment {note} added to card #{seq}")
+            })
+        }
+    }
 }
 
 async fn connect(config: &Config) -> Result<PgConnection> {

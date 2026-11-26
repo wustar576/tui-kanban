@@ -14,7 +14,7 @@ use crate::model::{
     LinkKind, Note, NoteKind, Origin, Outcome, Question, QuestionOption, QuestionStatus, Workspace,
     WorkspaceSource,
 };
-use crate::resolve::{HerdrContext, current_herdr_context};
+use crate::resolve::{SpaceContext, current_space};
 
 /// Number of cards per lane kind.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, sqlx::FromRow)]
@@ -55,6 +55,13 @@ pub struct BoardSummary {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub archived_at: Option<DateTime<Utc>>,
+    /// The terminal the board was created in, when known (docs/board-v2.md section 12.7).
+    pub terminal_space: Option<String>,
+    pub terminal_tab: Option<String>,
+    pub terminal_id: Option<String>,
+    pub cwd: Option<String>,
+    /// Questions waiting for the human's answer.
+    pub open_question_count: i64,
     #[sqlx(flatten)]
     pub cards: KindCounts,
 }
@@ -390,12 +397,12 @@ pub async fn workspaces_by_name(
     .await?)
 }
 
-/// The herdr context of the current terminal (via `HC_TERMINAL_ID` and `hc get`) and the
-/// workspace stored for that herdr space, if any. `None` outside herdr or when `hc` fails.
+/// The workspace area of the current terminal (`KB_TERMINAL_SPACE`) and the workspace
+/// stored for that space, if any. `None` when `KB_TERMINAL_SPACE` is unset.
 pub async fn workspace_for_current_terminal(
     conn: &mut PgConnection,
-) -> Result<Option<(HerdrContext, Option<Workspace>)>> {
-    let Some(ctx) = current_herdr_context() else {
+) -> Result<Option<(SpaceContext, Option<Workspace>)>> {
+    let Some(ctx) = current_space() else {
         return Ok(None);
     };
     let ws = workspace_by_key(conn, &ctx.workspace_key()).await?;
@@ -425,6 +432,9 @@ pub async fn list_boards(conn: &mut PgConnection, query: BoardQuery) -> Result<V
     Ok(sqlx::query_as::<_, BoardSummary>(
         "SELECT b.id, b.workspace_id, w.name AS workspace_name, b.session_key, b.title, b.goal,
                 b.status, b.outcome, b.rev, b.created_at, b.updated_at, b.archived_at,
+                b.terminal_space, b.terminal_tab, b.terminal_id, b.cwd,
+                (SELECT count(*) FROM question q WHERE q.board_id = b.id AND q.status = 'open')
+                    AS open_question_count,
                 count(c.id) FILTER (WHERE l.kind = 'todo')    AS todo,
                 count(c.id) FILTER (WHERE l.kind = 'doing')   AS doing,
                 count(c.id) FILTER (WHERE l.kind = 'done')    AS done,
@@ -883,10 +893,21 @@ pub enum JudgeTag {
     Advice,
 }
 
+impl JudgeTag {
+    /// The question's name in `judge.finding` (`detail.question`).
+    pub fn question(self) -> &'static str {
+        match self {
+            JudgeTag::Waiting => "waiting",
+            JudgeTag::Advice => "advice",
+        }
+    }
+}
+
 /// A `judge.finding` of question `waiting` or `advice` that is still active: the latest one
 /// per card and question, when nothing after it settled it (docs/tui.md section 12.5). Read
-/// for the TUI only; it is not part of [`BoardSnapshot`] or [`CardDetail`], which the CLI
-/// prints for the agent.
+/// for the TUI and for `kb board show --json --findings` (docs/ui-contract.md section 5);
+/// it is not part of [`BoardSnapshot`] or [`CardDetail`], which the CLI prints for the
+/// agent.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActiveFinding {
     /// The `judge.finding` row.
@@ -1249,14 +1270,14 @@ pub async fn unreplied_comments(
     .await?)
 }
 
-/// The most recently changed active board whose `herdr_terminal` is `terminal`
+/// The most recently changed active board whose `terminal_id` is `terminal`
 /// (session key source 4, docs/hooks.md section 5.3).
 pub async fn active_board_by_terminal(
     conn: &mut PgConnection,
     terminal: &str,
 ) -> Result<Option<Board>> {
     Ok(sqlx::query_as::<_, Board>(
-        "SELECT * FROM board WHERE herdr_terminal = $1 AND status = 'active'
+        "SELECT * FROM board WHERE terminal_id = $1 AND status = 'active'
          ORDER BY updated_at DESC, id DESC LIMIT 1",
     )
     .bind(terminal)

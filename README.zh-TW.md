@@ -137,6 +137,35 @@ claude plugin install kb@tui-kanban
 之後在 Claude Code 的 session 裡先與 agent 討論工作；要用看板時，輸入 `/kb:kb`（可以加上
 標題，例如 `/kb:kb 修正登入逾時`）。在另一個終端機開啟 `kb tui`。
 
+## 終端機工作區域與其他畫面
+
+`kb` 不相依任何終端機程式。它不執行終端機程式，也不讀取它們的環境變數。
+
+- **記錄終端機**：在有分頁或 pane 的終端機工作區域裡，`/kb:kb` 建好看板之後，agent 自己把
+  所在的終端機記錄到看板上：
+  `kb board terminal --id <終端機 id> [--space <id>] [--tab <id>] [--workspace-name <名稱>]`。
+  技能 `/kb:kb` 告訴 agent 如何找出識別值，目前涵蓋 [herdr](https://herdr.dev)。`--space`
+  會把看板移到那個 space 的 workspace。
+- **選用的環境變數**：也可以由 shell profile 設定 `KB_TERMINAL_ID`、`KB_TERMINAL_SPACE`、
+  `KB_TERMINAL_TAB` 與 `KB_WORKSPACE_NAME`；新看板一建立就帶有這些值。
+- **「在 session 裡說明」的焦點切換**：在 `kb tui` 選這個回答時，如果設了 `KB_FOCUS_CMD`，
+  TUI 執行它，指令裡的 `{terminal}` 換成看板的終端機 id，例如
+  `herdr-app do pane.focus --terminal {terminal}`。
+- **其他畫面**：你自己的畫面可以透過 `kb` 的 JSON 輸出讀取看板與回答提問。
+  `kb version --json` 提供畫面要檢查的 `ui_contract` 版本；
+  `kb board show --json --findings` 另外附上模型判斷的結果。
+
+### 從舊版升級
+
+這一版新增資料表第 8 版，把看板的終端機欄位改名。既有的資料會保留。
+
+1. 取得新版。
+2. 再執行一次安裝腳本：`pwsh scripts/setup.ps1` 或 `bash scripts/setup.sh`。資料庫已經有看板
+   時，腳本輸出 migration 的計畫後停止。
+3. 檢查計畫，再加上 `-Yes`（PowerShell）或 `--yes`（bash）執行一次。
+4. 再執行一次 `cargo install --path crates/kb --locked`。
+5. 更新 Claude Code 外掛，讓 `/kb:kb` 有新的記錄終端機步驟。
+
 ## 指令速查
 
 | 指令 | 用途 |
@@ -150,6 +179,8 @@ claude plugin install kb@tui-kanban
 | `kb activity` | 輸出活動軌跡 |
 | `kb board check [--history]` | 立即檢查守則，或列出過去的違反 |
 | `kb db status` | 檢查連線與資料表版本 |
+| `kb board terminal` | 顯示或記錄 agent 所在的終端機 |
+| `kb version` | 輸出版本與 `ui_contract` 版本 |
 | `kb --skill` | 輸出 agent 讀的完整用法 |
 
 每個指令都接受 `--json`。指令的輸出是英文；卡片標題與泳道名稱照原樣顯示。

@@ -54,6 +54,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "because",
         sql: include_str!("../../../migrations/0007_because.sql"),
     },
+    Migration {
+        version: 8,
+        name: "terminal_columns",
+        sql: include_str!("../../../migrations/0008_terminal_columns.sql"),
+    },
 ];
 
 /// Schema version this binary expects.

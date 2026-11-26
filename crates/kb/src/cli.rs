@@ -21,7 +21,7 @@ pub struct Cli {
     pub skill: bool,
 
     /// Session key (default: $KB_SESSION, then $CLAUDE_CODE_SESSION_ID, then the latest
-    /// active board of the herdr terminal $HC_TERMINAL_ID)
+    /// active board of the terminal $KB_TERMINAL_ID)
     #[arg(long, global = true, value_name = "KEY")]
     pub session: Option<String>,
 
@@ -114,6 +114,43 @@ pub enum Cmd {
     },
     /// Terminal UI for humans; its only write is answering questions (docs/tui.md)
     Tui(TuiArgs),
+    /// Writes of the human's own screens (herdr board); hidden: agents must not use it
+    /// (docs/cli.md section 4.20)
+    #[command(hide = true)]
+    Human {
+        #[command(subcommand)]
+        cmd: HumanCmd,
+    },
+    /// Print the version and the UI contract version (docs/ui-contract.md)
+    Version,
+}
+
+/// `kb human ...`: the same writes as `kb tui` makes, as the reader role (docs/cli.md 4.20).
+#[derive(Debug, Subcommand)]
+pub enum HumanCmd {
+    /// Answer a question by its id
+    Answer {
+        /// The question's id
+        id: i64,
+        /// An option's id (question_option.id); repeat for several
+        #[arg(long = "option", value_name = "OPTION_ID")]
+        options: Vec<i64>,
+        /// A typed answer
+        #[arg(long, allow_hyphen_values = true)]
+        text: Option<String>,
+        /// The human will reply in the session ("explain in the session")
+        #[arg(long)]
+        chat: bool,
+    },
+    /// Comment on a card of the session's board
+    Comment {
+        /// The card
+        #[arg(long, value_name = "CARD")]
+        card: String,
+        /// The comment
+        #[arg(allow_hyphen_values = true)]
+        text: String,
+    },
 }
 
 /// `kb tui [--board <KEY>] [--workspace <NAME>] [--snapshot [--width N] [--height N] [--card N]]`.
@@ -181,6 +218,21 @@ pub enum BoardCmd {
         /// Board id, or the session key the board belongs to
         target: String,
     },
+    /// Record the terminal this session runs in (without --id: show it and how to find the ids)
+    Terminal {
+        /// Terminal id
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+        /// Id of the terminal's workspace area; also moves the board to its workspace
+        #[arg(long, value_name = "ID", requires = "id")]
+        space: Option<String>,
+        /// Tab id of the terminal
+        #[arg(long, value_name = "ID", requires = "id")]
+        tab: Option<String>,
+        /// Name of the --space workspace (default: kept, or the space id for a new one)
+        #[arg(long, value_name = "NAME", requires_all = ["id", "space"])]
+        workspace_name: Option<String>,
+    },
     /// Create the session's board, or update its title and goal
     Init {
         /// Board title (required unless the board already has one, which is then kept)
@@ -195,7 +247,7 @@ pub enum BoardCmd {
         /// Epics as name,name,... created in order (existing names are skipped)
         #[arg(long, value_name = "LIST")]
         epics: Option<String>,
-        /// Workspace name (default: the herdr space, else the current directory)
+        /// Workspace name (default: the space $KB_TERMINAL_SPACE, else the current directory)
         #[arg(long, value_name = "NAME")]
         workspace: Option<String>,
     },
@@ -204,6 +256,11 @@ pub enum BoardCmd {
         /// Also list the cards of done and dropped lanes
         #[arg(long)]
         all: bool,
+        /// With --json (checked in main: --json is global, so clap's `requires` misses it
+        /// before the subcommand): add the model judge's active findings, for human screens. Hidden:
+        /// findings are for the human only (docs/ui-contract.md section 5)
+        #[arg(long, hide = true)]
+        findings: bool,
     },
     /// List boards
     List {
@@ -641,6 +698,37 @@ mod tests {
         assert!(out.contains("text: \"--kind\""), "{out}");
         let out = parse(&["ask", "--card", "1", "--option", "a", "--", "-h"]);
         assert!(out.contains("question: \"-h\""), "{out}");
+    }
+
+    /// docs/board-v2.md section 26.2.
+    #[test]
+    fn board_terminal_options_need_id_and_space() {
+        let out = parse(&["board", "terminal"]);
+        assert!(out.contains("Terminal { id: None, space: None"), "{out}");
+        let out = parse(&[
+            "board",
+            "terminal",
+            "--id",
+            "t2b",
+            "--space",
+            "spc1",
+            "--tab",
+            "tb1",
+            "--workspace-name",
+            "Acme DevOps",
+        ]);
+        assert!(
+            out.contains(
+                "Terminal { id: Some(\"t2b\"), space: Some(\"spc1\"), tab: Some(\"tb1\"), \
+                 workspace_name: Some(\"Acme DevOps\") }"
+            ),
+            "{out}"
+        );
+        parse(&["board", "terminal", "--id", "t2b"]);
+        fails(&["board", "terminal", "--space", "spc1"]);
+        fails(&["board", "terminal", "--tab", "tb1"]);
+        fails(&["board", "terminal", "--id", "t2b", "--workspace-name", "n"]);
+        fails(&["board", "terminal", "--space", "s", "--workspace-name", "n"]);
     }
 
     #[test]

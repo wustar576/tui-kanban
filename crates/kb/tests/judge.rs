@@ -2,6 +2,8 @@
 //! the Decisions API (std `TcpListener`, canned JSON) and a dummy key. Database:
 //! `kanban_test` only.
 
+mod contract;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -54,7 +56,10 @@ fn kb(rules: &PathBuf) -> Command {
         .env_remove(PLUGIN_KEY_ENV)
         .env_remove("KB_SESSION")
         .env_remove("CLAUDE_CODE_SESSION_ID")
-        .env_remove("HC_TERMINAL_ID")
+        .env_remove("KB_TERMINAL_ID")
+        .env_remove("KB_TERMINAL_SPACE")
+        .env_remove("KB_TERMINAL_TAB")
+        .env_remove("KB_WORKSPACE_NAME")
         .env_remove("CLAUDE_ENV_FILE");
     cmd
 }
@@ -845,6 +850,37 @@ fn findings_stay_out_of_the_agent_views_and_settle_in_the_tui() {
         // (Not plain "judge": the worktree path may contain it.)
         assert!(!out.contains("judge."), "{args:?}: {out}");
         assert!(!out.contains("finding"), "{args:?}: {out}");
+    }
+
+    // Human screens ask for them with --findings (docs/ui-contract.md section 5): the same
+    // active findings, with the TUI's label and explanation (docs/tui.md 12.2, 12.4).
+    let board: Value =
+        serde_json::from_str(&s.ok(&["--json", "board", "show", "--findings"])).unwrap();
+    let lines = contract::load().map(|(_, l)| l).unwrap_or_default();
+    for line in lines
+        .iter()
+        .filter(|l| l.command == "board-show" && l.path == "findings[]")
+    {
+        contract::check(line, &board);
+    }
+    let id = json!(s.card_id(1));
+    let shown = board["findings"].as_array().unwrap();
+    assert_eq!(shown.len(), 2, "{board}");
+    for (f, question, label, explanation) in [
+        (&shown[0], "waiting", "等回覆", "agent 在對話裡等你回覆"),
+        (
+            &shown[1],
+            "advice",
+            "建議未記錄",
+            "agent 的回覆對這張卡片提出建議或決定，卡片沒有紀錄",
+        ),
+    ] {
+        assert_eq!(f["card_id"], id, "{f}");
+        assert_eq!(f["card_seq"], 1, "{f}");
+        assert_eq!(f["question"], question, "{f}");
+        assert_eq!(f["label"], label, "{f}");
+        let p = f["p"].as_f64().unwrap();
+        assert_eq!(f["text"], format!("{explanation}（評測 {p:.2}）"), "{f}");
     }
 
     // The agent writes on the card: the advice is settled, the waiting is not.

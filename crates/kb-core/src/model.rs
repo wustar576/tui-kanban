@@ -75,7 +75,7 @@ macro_rules! text_enum {
 
 text_enum!(
     /// Where a workspace comes from (`workspace.source`).
-    WorkspaceSource ("workspace source") { Herdr => "herdr", Dir => "dir", Manual => "manual" }
+    WorkspaceSource ("workspace source") { Space => "space", Dir => "dir", Manual => "manual" }
 );
 
 text_enum!(
@@ -291,9 +291,9 @@ pub struct Board {
     pub status: BoardStatus,
     pub outcome: Option<Outcome>,
     pub summary: Option<String>,
-    pub herdr_space: Option<String>,
-    pub herdr_tab: Option<String>,
-    pub herdr_terminal: Option<String>,
+    pub terminal_space: Option<String>,
+    pub terminal_tab: Option<String>,
+    pub terminal_id: Option<String>,
     pub cwd: Option<String>,
     pub prev_board_id: Option<i64>,
     pub next_card_seq: i32,

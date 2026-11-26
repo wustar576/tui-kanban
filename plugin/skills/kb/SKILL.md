@@ -3,7 +3,7 @@ name: kb
 description: Start the kanban board for this session. The user runs /kb after discussing the work with you; you then build the board from that discussion. If the kb program is missing, offers to install it.
 disable-model-invocation: true
 argument-hint: "[title or goal hint]"
-allowed-tools: Bash(kb board *) Bash(kb epic *) Bash(kb lane *) Bash(kb card *) Bash(kb --version) Bash(echo KB_NOT_INSTALLED) PowerShell(kb board *) PowerShell(kb epic *) PowerShell(kb lane *) PowerShell(kb card *) PowerShell(kb --version) PowerShell(echo KB_NOT_INSTALLED) PowerShell(Write-Output KB_NOT_INSTALLED)
+allowed-tools: Bash(kb board *) Bash(kb epic *) Bash(kb lane *) Bash(kb card *) Bash(kb --version) Bash(echo KB_NOT_INSTALLED) Bash(hc get *) PowerShell(kb board *) PowerShell(kb epic *) PowerShell(kb lane *) PowerShell(kb card *) PowerShell(kb --version) PowerShell(echo KB_NOT_INSTALLED) PowerShell(Write-Output KB_NOT_INSTALLED) PowerShell(hc get *)
 ---
 
 The user just started the kanban board for this session. `kb board start` printed this:
@@ -17,7 +17,24 @@ What to do now:
 1. If the output above lists earlier boards ("Recent boards that may belong to this conversation"), no board exists yet. Show those boards to the user and ask whether to continue one of them (`kb board adopt <board id> --session ${CLAUDE_SESSION_ID}`) or to start a new one (`kb board start --new --session ${CLAUDE_SESSION_ID}`). Run the command the user chooses, then go on with step 2.
 2. Build the board from the discussion you had with the user so far, as the guide above says: `kb board init` with a title, a goal, lanes and epics; cards with `--agreed` for what the user already agreed; cards with `--discuss` for topics still under discussion. Do not invent work the user did not agree to.
 3. The user's hint for the board's title or goal (empty means no hint): $ARGUMENTS
-4. Then continue the work, and keep the board current as the guide says.
+4. If the output above ends with "hint: no terminal is recorded for this board", record your terminal as "Recording the terminal" below says. Otherwise skip this step.
+5. Then continue the work, and keep the board current as the guide says.
+
+Recording the terminal:
+
+`kb` never runs terminal programs, so you find the terminal's ids yourself and record them with `kb board terminal --id <terminal id> [--space <space id>] [--tab <tab id>] [--workspace-name <name>]`. `--space` also moves the board to the workspace of that terminal space.
+
+| Terminal workspace | How to tell | What to run |
+| --- | --- | --- |
+| herdr | the variable `HC_TERMINAL_ID` is set | `hc get $HC_TERMINAL_ID`, then `kb board terminal` with its JSON as below |
+| another one with tabs or panes | its own variables | its own commands; if you find no stable terminal id, record nothing |
+| none (a plain terminal) | none of the above | nothing to record |
+
+herdr: `hc get $HC_TERMINAL_ID` prints JSON. `--id` is `address`, `--space` is `labels["herdr.space"]`, `--tab` is `labels["herdr.tab"]`, and `--workspace-name` is the part of `labels["where"]` before " / " (for `Acme_DevOps / 4`, it is `Acme_DevOps`). Read the JSON, then run `kb board terminal` with the values written out, for example:
+
+`kb board terminal --id t2b --space spc1 --tab tb1 --workspace-name Acme_DevOps`
+
+Leave out an option whose value is empty. If `hc get` fails, run `kb board terminal --id <value of HC_TERMINAL_ID>`. Run it again when the terminal later moves to another space or tab.
 
 Every `kb` command finds this session by itself. If one reports `no session`, add `--session ${CLAUDE_SESSION_ID}`.
 

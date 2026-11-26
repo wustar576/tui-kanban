@@ -8,7 +8,7 @@ use std::time::Duration;
 use kb_core::events::{BoardEvent, EventListener, ListenEvent};
 use kb_core::model::{BoardStatus, LaneKind, LinkKind, NoteKind, Origin, Outcome};
 use kb_core::read::{self, BoardQuery, LinkDirection};
-use kb_core::resolve::{self, HerdrContext, WorkspaceTarget};
+use kb_core::resolve::{self, SpaceContext, WorkspaceTarget};
 use kb_core::write::{self, BoardInit, CardAdd, LinkTarget};
 use kb_core::{Error, PgConnection, Role};
 use serde_json::json;
@@ -1295,28 +1295,21 @@ fn session_key_resolution_order() {
 
 #[test]
 fn workspace_resolution_order() {
-    let json = r#"{"address":"t2b","labels":{"herdr.seen":"1","herdr.space":"spc1","herdr.tab":"tb1","where":"Acme_DevOps / 3"}}"#;
-    let ctx = resolve::parse_hc_get(json, "t2b").unwrap();
+    let env = |k: &str| match k {
+        "KB_TERMINAL_ID" => Some("t2b".to_string()),
+        "KB_TERMINAL_SPACE" => Some("spc1".to_string()),
+        "KB_TERMINAL_TAB" => Some("tb1".to_string()),
+        "KB_WORKSPACE_NAME" => Some("Acme_DevOps".to_string()),
+        _ => None,
+    };
+    let ctx = resolve::terminal_env(env).space.unwrap();
     assert_eq!(
         ctx,
-        HerdrContext {
+        SpaceContext {
             space: "spc1".into(),
-            tab: Some("tb1".into()),
-            terminal: "t2b".into(),
             name: "Acme_DevOps".into()
         }
     );
-    let no_where = resolve::parse_hc_get(r#"{"labels":{"herdr.space":"spc2"}}"#, "t9").unwrap();
-    assert_eq!(
-        (
-            no_where.name.as_str(),
-            no_where.terminal.as_str(),
-            no_where.tab
-        ),
-        ("spc2", "t9", None)
-    );
-    assert!(resolve::parse_hc_get(r#"{"labels":{}}"#, "t1").is_none());
-    assert!(resolve::parse_hc_get("not json", "t1").is_none());
 
     // docs/cli.md section 2.4: the name is the last component of the folder's absolute
     // path on the machine where the session runs, so the folder must be absolute here.
@@ -1331,12 +1324,12 @@ fn workspace_resolution_order() {
         (manual.key.as_str(), manual.name.as_str()),
         ("manual:手動", "手動")
     );
-    let herdr = resolve::resolve_workspace(None, Some(ctx), cwd);
+    let space = resolve::resolve_workspace(None, Some(ctx), cwd);
     assert_eq!(
-        (herdr.key.as_str(), herdr.name.as_str()),
-        ("herdr:spc1", "Acme_DevOps")
+        (space.key.as_str(), space.name.as_str()),
+        ("space:spc1", "Acme_DevOps")
     );
-    assert!(herdr.herdr.is_some());
+    assert!(space.space.is_some());
     let dir = resolve::resolve_workspace(None, None, cwd);
     assert_eq!(
         (dir.key.as_str(), dir.name.as_str()),
@@ -1345,74 +1338,56 @@ fn workspace_resolution_order() {
 }
 
 #[test]
-fn terminal_fields_without_a_herdr_space() {
-    // docs/board-v2.md section 12.7: a terminal started by `hc run` has no space label.
-    let bare = resolve::parse_hc_terminal(Some(r#"{"address":"t7","labels":{}}"#), "id-7");
-    assert_eq!(
-        bare,
-        resolve::TerminalInfo {
-            terminal: "t7".into(),
-            space: None,
-            tab: None
-        }
-    );
-    // No usable output: the HC_TERMINAL_ID value is the address.
-    let fallback = resolve::parse_hc_terminal(None, " id-8 ");
-    assert_eq!(
-        (fallback.terminal.as_str(), fallback.space, fallback.tab),
-        ("id-8", None, None)
-    );
-    assert_eq!(
-        resolve::parse_hc_terminal(Some("not json"), "id-9").terminal,
-        "id-9"
-    );
-    let full = resolve::parse_hc_terminal(
-        Some(r#"{"address":"t2b","labels":{"herdr.space":"spc1","herdr.tab":"tb1"}}"#),
-        "x",
-    );
-    assert_eq!(
-        (full.space.as_deref(), full.tab.as_deref()),
-        (Some("spc1"), Some("tb1"))
-    );
-    // Workspace resolution is unchanged: no space label, no herdr workspace; the terminal
-    // is still attached to the new board, also for a manual workspace.
-    assert!(resolve::parse_hc_get(r#"{"address":"t7","labels":{}}"#, "id-7").is_none());
-    let hc = resolve::HcInfo {
-        terminal: bare.clone(),
-        herdr: None,
+fn terminal_fields_without_a_terminal_space() {
+    // A terminal id without KB_TERMINAL_SPACE: the workspace comes from the folder, and
+    // the terminal is still attached to the new board, also for a manual workspace.
+    let here = resolve::terminal_env(|k| (k == "KB_TERMINAL_ID").then(|| " t7 ".to_string()));
+    let bare = resolve::TerminalInfo {
+        terminal: "t7".into(),
+        space: None,
+        tab: None,
     };
+    assert_eq!(here.terminal, Some(bare.clone()));
+    assert_eq!(here.space, None);
     let cwd = std::env::temp_dir();
-    let ws = resolve::workspace_here(None, Some(hc.clone()), &cwd);
+    let ws = resolve::workspace_here(None, here.clone(), &cwd);
     assert_eq!(ws.key, format!("dir:{}", cwd.to_string_lossy()));
     assert_eq!(ws.terminal, Some(bare.clone()));
-    let manual = resolve::workspace_here(Some("手動"), Some(hc), &cwd);
+    let manual = resolve::workspace_here(Some("手動"), here, &cwd);
     assert_eq!(manual.key, "manual:手動");
     assert_eq!(manual.terminal, Some(bare));
-    assert_eq!(resolve::workspace_here(None, None, &cwd).terminal, None);
+    assert_eq!(
+        resolve::workspace_here(None, resolve::TerminalEnv::default(), &cwd).terminal,
+        None
+    );
 }
 
 #[tokio::test]
-async fn new_board_stores_herdr_context_and_updates_workspace_name() {
+async fn new_board_stores_terminal_space_and_updates_workspace_name() {
     let mut conn = common::writer().await;
     let space = common::unique("space");
-    let ctx = |name: &str| HerdrContext {
-        space: space.clone(),
-        tab: Some("tb1".into()),
-        terminal: "t2b".into(),
-        name: name.into(),
+    let target = |name: &str| {
+        let env = |k: &str| match k {
+            "KB_TERMINAL_ID" => Some("t2b".to_string()),
+            "KB_TERMINAL_SPACE" => Some(space.clone()),
+            "KB_TERMINAL_TAB" => Some("tb1".to_string()),
+            "KB_WORKSPACE_NAME" => Some(name.to_string()),
+            _ => None,
+        };
+        resolve::workspace_here(None, resolve::terminal_env(env), Path::new("."))
     };
     let init = || BoardInit {
-        title: Some("herdr".into()),
+        title: Some("space".into()),
         ..Default::default()
     };
 
-    let s1 = common::unique("herdr");
-    let ws1 = resolve::resolve_workspace(None, Some(ctx("舊名稱")), Path::new("."));
+    let s1 = common::unique("space-board");
+    let ws1 = target("舊名稱");
     write::board_init(&mut conn, &s1, init(), || ws1)
         .await
         .unwrap();
-    let s2 = common::unique("herdr");
-    let ws2 = resolve::resolve_workspace(None, Some(ctx("新名稱")), Path::new("."));
+    let s2 = common::unique("space-board");
+    let ws2 = target("新名稱");
     write::board_init(&mut conn, &s2, init(), || ws2)
         .await
         .unwrap();
@@ -1426,10 +1401,10 @@ async fn new_board_stores_herdr_context_and_updates_workspace_name() {
         .unwrap()
         .unwrap();
     assert_eq!(b1.workspace_id, b2.workspace_id);
-    assert_eq!(b1.herdr_space.as_deref(), Some(space.as_str()));
-    assert_eq!(b1.herdr_tab.as_deref(), Some("tb1"));
-    assert_eq!(b1.herdr_terminal.as_deref(), Some("t2b"));
-    let ws = read::workspace_by_key(&mut conn, &format!("herdr:{space}"))
+    assert_eq!(b1.terminal_space.as_deref(), Some(space.as_str()));
+    assert_eq!(b1.terminal_tab.as_deref(), Some("tb1"));
+    assert_eq!(b1.terminal_id.as_deref(), Some("t2b"));
+    let ws = read::workspace_by_key(&mut conn, &format!("space:{space}"))
         .await
         .unwrap()
         .unwrap();

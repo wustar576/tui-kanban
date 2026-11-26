@@ -695,6 +695,11 @@ fn board_summary(id: i64, title: &str) -> BoardSummary {
         created_at: b.created_at,
         updated_at: b.updated_at,
         archived_at: None,
+        terminal_space: None,
+        terminal_tab: None,
+        terminal_id: None,
+        cwd: None,
+        open_question_count: 0,
         cards: KindCounts::default(),
     }
 }

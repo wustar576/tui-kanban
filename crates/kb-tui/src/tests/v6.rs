@@ -907,4 +907,7 @@ fn the_tui_writes_only_through_the_two_functions_on_the_reader_role() {
     assert!(!run.contains("hc send") && !run.contains("\"hc\""));
     let notify = SOURCES.iter().find(|(n, _)| *n == "notify.rs").unwrap().1;
     assert!(!notify.contains("\"hc\""), "no hc send");
+    // kb runs no terminal program of its own: the focus command comes from KB_FOCUS_CMD
+    // (docs/board-v2.md section 24).
+    assert!(!notify.contains("herdr") && notify.contains("KB_FOCUS_CMD"));
 }

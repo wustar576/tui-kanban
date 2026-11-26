@@ -1,6 +1,8 @@
 //! End-to-end tests of the `kb` binary: exit codes, messages, JSON, UTF-8 text and stdin.
 //! Database commands run against `kanban_test` only.
 
+mod contract;
+
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
@@ -34,7 +36,10 @@ fn kb() -> Command {
         .env("KB_ADMIN_URL", test_url(Role::Admin))
         .env_remove("KB_SESSION")
         .env_remove("CLAUDE_CODE_SESSION_ID")
-        .env_remove("HC_TERMINAL_ID");
+        .env_remove("KB_TERMINAL_ID")
+        .env_remove("KB_TERMINAL_SPACE")
+        .env_remove("KB_TERMINAL_TAB")
+        .env_remove("KB_WORKSPACE_NAME");
     cmd
 }
 
@@ -915,4 +920,482 @@ fn text_values_may_start_with_a_hyphen() {
     let o = run(kb_s().args(["card", "done", "2", "--result=--已完成"]));
     assert_eq!(o.status.code(), Some(0));
     assert!(stderr(&o).is_empty(), "{}", stderr(&o));
+}
+
+/// `kb human answer` / `kb human comment` (docs/cli.md section 4.20): hidden from help, the
+/// same refusals as the database functions, and the writes recorded as the user's.
+#[test]
+fn human_answer_and_comment() {
+    migrate();
+    let session = unique("human");
+    let workspace = unique("人");
+    let s = |args: &[&str]| {
+        let mut all = vec!["--session", session.as_str()];
+        all.extend_from_slice(args);
+        all.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    ok(kb().args(s(&[
+        "board",
+        "init",
+        "--title",
+        "人的寫入",
+        "--workspace",
+        &workspace,
+    ])));
+    ok(kb().args(s(&["card", "add", "--lane", "待辦", "--title", "選方案"])));
+    ok(kb().args(s(&[
+        "ask",
+        "--card",
+        "1",
+        "選哪個？",
+        "--option",
+        "A",
+        "--option",
+        "B",
+    ])));
+    let list: serde_json::Value =
+        serde_json::from_str(&ok(kb().args(s(&["question", "list", "--open", "--json"])))).unwrap();
+    let q = &list[0];
+    let id = q["id"].as_i64().unwrap().to_string();
+    let a = q["options"][0]["id"].as_i64().unwrap().to_string();
+    let b = q["options"][1]["id"].as_i64().unwrap().to_string();
+
+    // The list carries the open question count and the terminal fields (docs/cli.md 4.5).
+    let rows: serde_json::Value =
+        serde_json::from_str(&ok(kb().args(["board", "list", "--all", "--json"]))).unwrap();
+    let row = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["session_key"] == session.as_str())
+        .unwrap();
+    assert_eq!(row["open_question_count"], 1);
+    assert!(row.get("terminal_id").is_some() && row["terminal_id"].is_null());
+
+    // Activity JSON carries the screen's line for each entry (docs/cli.md 4.19).
+    let act: serde_json::Value =
+        serde_json::from_str(&ok(kb().args(s(&["activity", "--json"])))).unwrap();
+    let has_ask = act.as_array().unwrap().iter().any(|a| {
+        a["verb"] == "question.ask" && a["text"].as_str().is_some_and(|t| t.contains("選哪個？"))
+    });
+    assert!(has_ask, "{act}");
+
+    // Hidden: not in the help or the agent guide.
+    // The command list has no "human" entry (the about text may still say "humans").
+    let help = ok(kb().arg("--help"));
+    assert!(
+        !help.lines().any(|l| l.trim_start().starts_with("human ")),
+        "{help}"
+    );
+    assert!(!ok(kb().arg("--skill")).contains("kb human"));
+
+    // Refusals are the database messages, exit 1.
+    let o = run(kb().args(["human", "answer", &id]));
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stderr(&o).contains("no option selected"), "{}", stderr(&o));
+    let o = run(kb().args(["human", "answer", &id, "--option", &a, "--option", &b]));
+    assert_eq!(o.status.code(), Some(1));
+    assert!(stderr(&o).contains("question accepts one option"));
+
+    let out: serde_json::Value = serde_json::from_str(&ok(kb().args([
+        "human", "answer", &id, "--option", &b, "--text", "理由", "--json",
+    ])))
+    .unwrap();
+    assert_eq!(out["status"], "answered");
+    let shown: serde_json::Value =
+        serde_json::from_str(&ok(kb().args(s(&["question", "show", &id, "--json"])))).unwrap();
+    assert_eq!(shown["status"], "answered");
+    assert_eq!(shown["answer_text"], "理由");
+    let o = run(kb().args(["human", "answer", &id, "--chat"]));
+    assert!(stderr(&o).contains("question is not open"));
+
+    // A comment goes to the session's card, as the user.
+    let out = ok(kb().args(s(&["human", "comment", "--card", "1", "請先看\n測試"])));
+    assert!(out.contains("added to card #1"), "{out}");
+    let card: serde_json::Value =
+        serde_json::from_str(&ok(kb().args(s(&["card", "show", "1", "--json"])))).unwrap();
+    let note = card["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["kind"] == "comment")
+        .unwrap();
+    assert_eq!(note["body"], "請先看 測試");
+    assert_eq!(note["author"], "user");
+    let o = run(kb().args(s(&["human", "comment", "--card", "1", " "])));
+    assert_eq!(o.status.code(), Some(1));
+}
+
+/// `kb version` needs no database (docs/cli.md section 4.21), and `--findings` only goes
+/// with `--json` (docs/ui-contract.md section 5).
+#[test]
+fn version_and_findings_syntax() {
+    let o = run(Command::new(env!("CARGO_BIN_EXE_kb"))
+        .args(["version"])
+        .env("KB_WRITER_URL", "postgres://nobody@127.0.0.1:1/none")
+        .env("KB_READER_URL", "postgres://nobody@127.0.0.1:1/none"));
+    assert_eq!(o.status.code(), Some(0), "{}", stderr(&o));
+    let prefix = format!("kb {} ui_contract ", env!("CARGO_PKG_VERSION"));
+    let v: serde_json::Value = serde_json::from_str(&ok(kb().args(["version", "--json"]))).unwrap();
+    assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    match contract::load() {
+        Some((ui_contract, _)) => {
+            assert_eq!(stdout(&o), format!("{prefix}{ui_contract}\n"));
+            assert_eq!(v["ui_contract"], ui_contract);
+        }
+        // Without the design documents: the version is still a positive integer.
+        None => {
+            assert!(stdout(&o).starts_with(&prefix), "{}", stdout(&o));
+            assert!(v["ui_contract"].as_u64().is_some_and(|n| n > 0), "{v}");
+        }
+    }
+
+    let o = run(kb().args(["board", "show", "--findings"]));
+    assert_eq!(o.status.code(), Some(2));
+    // --json is global: before the subcommand it still counts (not a syntax error).
+    let o = run(kb().args(["--json", "board", "show", "--findings"]));
+    assert_ne!(o.status.code(), Some(2), "stderr: {}", stderr(&o));
+    // Hidden from the help, like the findings themselves (docs/board-v2.md section 22.3).
+    assert!(!ok(kb().args(["board", "show", "--help"])).contains("--findings"));
+}
+
+/// Every command and field of the UI contract (docs/ui-contract.md section 4.2) is in the
+/// JSON, so removing or renaming one fails here. Findings elements: `judge.rs`.
+#[test]
+fn the_ui_contract_fields_exist() {
+    migrate();
+    let session = unique("contract");
+    let workspace = unique("介面");
+    let s = |args: &[&str]| {
+        let mut all = vec!["--session", session.as_str()];
+        all.extend_from_slice(args);
+        all.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let json = |args: Vec<String>| -> serde_json::Value {
+        serde_json::from_str(&ok(kb().args(args))).expect("JSON output")
+    };
+    ok(kb().args(s(&[
+        "board",
+        "init",
+        "--title",
+        "介面",
+        "--workspace",
+        &workspace,
+        "--lanes",
+        "待辦:todo,實作:doing,完成:done,捨棄:dropped",
+        "--epics",
+        "階段一",
+    ])));
+    ok(kb().args(s(&[
+        "card",
+        "add",
+        "--lane",
+        "待辦",
+        "--title",
+        "選方案",
+        "--epic",
+        "階段一",
+    ])));
+    ok(kb().args(s(&[
+        "card",
+        "add",
+        "--lane",
+        "待辦",
+        "--title",
+        "沒有 epic",
+    ])));
+    ok(kb().args(s(&["link", "add", "1", "--relates", "2"])));
+    let asked = json(s(&[
+        "--json",
+        "ask",
+        "--card",
+        "1",
+        "選哪個？",
+        "--option",
+        "A",
+        "--option",
+        "B",
+    ]));
+    let q = asked["question"].as_i64().unwrap().to_string();
+    let shown = json(s(&["question", "show", &q, "--json"]));
+    let option = shown["options"][0]["id"].as_i64().unwrap().to_string();
+    let answer = json(s(&[
+        "human", "answer", &q, "--option", &option, "--text", "理由", "--json",
+    ]));
+    let comment = json(s(&["human", "comment", "--card", "1", "看一下", "--json"]));
+    // A note with a cause (notes[].because) that card 1 led to (led_to).
+    ok(kb().args(s(&[
+        "card",
+        "note",
+        "1",
+        "--kind",
+        "decision",
+        "選 A",
+        "--because",
+        &format!("q{q}"),
+    ])));
+    // An archived board of the same workspace (board list --archived).
+    let archived = unique("contract-archived");
+    ok(kb().args([
+        "--session",
+        &archived,
+        "board",
+        "init",
+        "--title",
+        "封存",
+        "--workspace",
+        &workspace,
+    ]));
+    ok(kb().args(["--session", &archived, "board", "archive"]));
+
+    let list = json(vec![
+        "board".into(),
+        "list".into(),
+        "--all".into(),
+        "--archived".into(),
+        "--json".into(),
+    ]);
+    let rows: Vec<&serde_json::Value> = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["session_key"] == session.as_str() || r["session_key"] == archived.as_str())
+        .collect();
+    assert_eq!(rows.len(), 2, "{list}");
+    assert!(rows.iter().any(|r| r["status"] == "archived"), "{list}");
+    let list = serde_json::Value::Array(rows.into_iter().cloned().collect());
+
+    let outputs: Vec<(&str, serde_json::Value)> = vec![
+        ("version", json(vec!["version".into(), "--json".into()])),
+        ("board-list", list),
+        (
+            "board-show",
+            json(s(&["board", "show", "--all", "--json", "--findings"])),
+        ),
+        ("card-show", json(s(&["card", "show", "1", "--json"]))),
+        (
+            "activity",
+            json(s(&["activity", "--limit", "50", "--json"])),
+        ),
+        (
+            "workspace-list",
+            json(vec!["workspace".into(), "list".into(), "--json".into()]),
+        ),
+        ("question-list", json(s(&["question", "list", "--json"]))),
+        (
+            "question-show",
+            json(s(&["question", "show", &q, "--json"])),
+        ),
+        ("human-answer", answer),
+        ("human-comment", comment),
+    ];
+
+    let lines = contract::load().map(|(_, l)| l).unwrap_or_default();
+    for line in &lines {
+        // This board has no findings; their fields are checked in judge.rs.
+        if line.command == "board-show" && line.path == "findings[]" {
+            continue;
+        }
+        let Some((_, value)) = outputs.iter().find(|(c, _)| *c == line.command) else {
+            panic!("docs/ui-contract.md lists unknown command {}", line.command);
+        };
+        contract::check(line, value);
+    }
+    // Every command of the test is in the contract.
+    for (command, _) in &outputs {
+        assert!(lines.iter().any(|l| l.command == *command), "{command}");
+    }
+    // Without --findings the board JSON is as before (docs/board-v2.md section 22.3).
+    let plain = json(s(&["board", "show", "--json"]));
+    assert!(plain.get("findings").is_none());
+}
+
+// --- kb board terminal (docs/board-v2.md section 26) ----------------------------------------
+
+const START_TERMINAL_HINT: &str = "hint: no terminal is recorded for this board. If you run in a \
+     terminal workspace (tabs or panes), run \"kb board terminal\" to see how to record it.";
+
+fn json_of(cmd: &mut Command) -> serde_json::Value {
+    serde_json::from_str(&ok(cmd)).expect("JSON output")
+}
+
+#[test]
+fn board_terminal_records_and_updates_the_terminal() {
+    migrate();
+    let session = unique("terminal");
+    let manual = unique("手動");
+    let space = unique("spc");
+    let terminal = unique("t");
+    let kbs = || {
+        let mut c = kb();
+        c.args(["--session", &session]);
+        c
+    };
+    let board = || json_of(kbs().args(["--json", "board", "show"]));
+    let rev = || board()["board"]["rev"].as_i64().unwrap();
+    let last = || {
+        let v = json_of(kbs().args(["--json", "activity", "--limit", "1"]));
+        v[0].clone()
+    };
+    ok(kbs().args(["board", "init", "--title", "終端機", "--workspace", &manual]));
+    let id = board()["board"]["id"].as_i64().unwrap();
+
+    // Without --id: read only, the current terminal and how to find the ids.
+    let before = rev();
+    let out = ok(kbs().args(["board", "terminal"]));
+    assert!(
+        out.starts_with(&format!(
+            "terminal of board {id}: none\n\nRecord the terminal this session runs in"
+        )),
+        "{out}"
+    );
+    // The recipes per terminal workspace live in the /kb:kb skill, not in kb
+    // (docs/board-v2.md section 26.10).
+    assert!(!out.contains("herdr"), "{out}");
+    let v = json_of(kbs().args(["--json", "board", "terminal"]));
+    assert_eq!(v["board_id"], id);
+    assert_eq!(v["terminal_id"], serde_json::Value::Null);
+    assert_eq!(rev(), before);
+
+    // Only --id: the terminal is recorded, the workspace stays.
+    let out = ok(kbs().args(["board", "terminal", "--id", &format!(" {terminal} ")]));
+    assert!(
+        out.starts_with(&format!("terminal {terminal} recorded for board {id}\n")),
+        "{out}"
+    );
+    let v = board();
+    assert_eq!(v["board"]["terminal_id"], terminal.as_str());
+    assert_eq!(v["board"]["terminal_space"], serde_json::Value::Null);
+    assert_eq!(v["workspace"]["key"], format!("manual:{manual}"));
+    assert_eq!(v["board"]["rev"].as_i64().unwrap(), before + 1);
+    let a = last();
+    assert_eq!(a["verb"], "board.terminal");
+    assert_eq!(a["detail"], serde_json::json!({ "terminal": terminal }));
+
+    // The same values again: nothing changes.
+    let before = rev();
+    let out = ok(kbs().args(["board", "terminal", "--id", &terminal]));
+    assert_eq!(out.lines().next(), Some("terminal unchanged"), "{out}");
+    assert_eq!(rev(), before);
+
+    // --space moves the board to the space workspace with the given name.
+    let args = [
+        "board",
+        "terminal",
+        "--id",
+        &terminal,
+        "--space",
+        &space,
+        "--tab",
+        "tb1",
+        "--workspace-name",
+        "空間",
+    ];
+    let out = ok(kbs().args(args));
+    assert!(
+        out.starts_with(&format!(
+            "terminal {terminal} recorded for board {id}, moved to workspace 空間\n"
+        )),
+        "{out}"
+    );
+    let v = board();
+    assert_eq!(v["workspace"]["key"], format!("space:{space}"));
+    assert_eq!(v["workspace"]["name"], "空間");
+    assert_eq!(v["workspace"]["source"], "space");
+    assert_eq!(v["board"]["terminal_space"], space.as_str());
+    assert_eq!(v["board"]["terminal_tab"], "tb1");
+    assert_eq!(
+        last()["detail"],
+        serde_json::json!({ "terminal": terminal, "space": space, "tab": "tb1", "workspace": "空間" })
+    );
+    let out = ok(kbs().args(["board", "terminal"]));
+    assert!(
+        out.starts_with(&format!(
+            "terminal of board {id}: {terminal} (space {space}, tab tb1)\n\n"
+        )),
+        "{out}"
+    );
+
+    // Without --workspace-name the existing workspace keeps its name.
+    let out = ok(kbs().args(&args[..8]));
+    assert_eq!(out.lines().next(), Some("terminal unchanged"), "{out}");
+    // A new name renames it.
+    let mut renamed = args.to_vec();
+    renamed[9] = "新名稱";
+    let out = ok(kbs().args(&renamed));
+    assert!(
+        out.starts_with(&format!(
+            "terminal {terminal} recorded for board {id}, workspace renamed to 新名稱\n"
+        )),
+        "{out}"
+    );
+    assert_eq!(board()["workspace"]["name"], "新名稱");
+
+    // Only --id again: space and tab are cleared, the workspace stays.
+    ok(kbs().args(["board", "terminal", "--id", &terminal]));
+    let v = board();
+    assert_eq!(v["board"]["terminal_space"], serde_json::Value::Null);
+    assert_eq!(v["board"]["terminal_tab"], serde_json::Value::Null);
+    assert_eq!(v["workspace"]["key"], format!("space:{space}"));
+
+    // Session key source 4 finds the board through the recorded terminal.
+    let out = ok(kb()
+        .env("KB_TERMINAL_ID", &terminal)
+        .args(["board", "show"]));
+    assert!(out.starts_with("board: 終端機 [active]"), "{out}");
+
+    // Errors.
+    let o = run(kbs().args(["board", "terminal", "--id", "  "]));
+    assert_eq!(o.status.code(), Some(1));
+    assert_eq!(stderr(&o).trim(), "--id must not be blank");
+    let o = run(kbs().args(["board", "terminal", "--space", &space]));
+    assert_eq!(o.status.code(), Some(2));
+    let o = run(kbs().args(["board", "terminal", "--id", "x", "--workspace-name", "n"]));
+    assert_eq!(o.status.code(), Some(2));
+
+    // An archived board: the write fails, the read works.
+    ok(kbs().args(["board", "archive"]));
+    let o = run(kbs().args(["board", "terminal", "--id", "other"]));
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        stderr(&o).starts_with("board is archived"),
+        "{}",
+        stderr(&o)
+    );
+    ok(kbs().args(["board", "terminal"]));
+}
+
+#[test]
+fn board_start_hints_at_the_terminal_only_when_none_is_known() {
+    migrate();
+    let cwd = std::env::temp_dir().join(unique("起點"));
+    std::fs::create_dir_all(&cwd).unwrap();
+    let session = unique("hint");
+    let kbs = |s: &str| {
+        let mut c = kb();
+        c.current_dir(&cwd).args(["--session", s]);
+        c
+    };
+    let out = ok(kbs(&session).args(["board", "start", "--new"]));
+    assert!(
+        out.ends_with(&format!("\n\n{START_TERMINAL_HINT}\n")),
+        "{out}"
+    );
+    // Active board without a terminal: the hint again; JSON is unchanged.
+    let out = ok(kbs(&session).args(["board", "start"]));
+    assert!(out.contains(START_TERMINAL_HINT), "{out}");
+    let v = json_of(kbs(&session).args(["--json", "board", "start"]));
+    assert_eq!(v["board"]["terminal_id"], serde_json::Value::Null);
+
+    // Recorded: no hint.
+    ok(kbs(&session).args(["board", "terminal", "--id", &unique("t")]));
+    let out = ok(kbs(&session).args(["board", "start"]));
+    assert!(!out.contains("hint: no terminal"), "{out}");
+
+    // Known from the environment: no hint.
+    let other = unique("hint-env");
+    let out = ok(kbs(&other)
+        .env("KB_TERMINAL_ID", unique("t"))
+        .args(["board", "start", "--new"]));
+    assert!(!out.contains("hint: no terminal"), "{out}");
 }

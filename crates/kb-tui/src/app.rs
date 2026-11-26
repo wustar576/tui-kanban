@@ -177,7 +177,7 @@ pub struct AnswerRequest {
     pub chat: bool,
     /// Typed text (trimmed); `None` without text or with `chat`.
     pub text: Option<String>,
-    /// The board's `herdr_terminal`.
+    /// The board's `terminal_id`.
     pub terminal: Option<String>,
 }
 
@@ -206,7 +206,7 @@ pub enum Effect {
         workspace_id: Option<i64>,
     },
     /// Answer a question through `kb_core::answer::answer_question`; with 「在 session
-    /// 裡說明」, then focus the agent's pane when herdr is there.
+    /// 裡說明」, then run `KB_FOCUS_CMD` to focus the agent's pane.
     Answer(AnswerRequest),
     /// Add a comment through `kb_core::comment::add_comment`.
     Comment(CommentRequest),
@@ -2043,7 +2043,7 @@ impl App {
             text: Some(m.text.trim())
                 .filter(|t| !m.chat && !t.is_empty())
                 .map(str::to_string),
-            terminal: data.snapshot.board.herdr_terminal.clone(),
+            terminal: data.snapshot.board.terminal_id.clone(),
         };
         self.submitting = Some(qid);
         self.flash = Some(MSG_SENDING.to_string());

@@ -156,6 +156,38 @@ Then, in a Claude Code session, discuss the work with the agent, and when you wa
 type `/kb:kb` (optionally with a title, e.g. `/kb:kb fix login timeout`). Open `kb tui` in
 another terminal.
 
+## Terminal workspaces and other screens
+
+`kb` does not depend on any terminal program. It never runs one and reads none of their
+environment variables.
+
+- **Recording the terminal.** In a terminal workspace with tabs or panes, the agent records
+  its own terminal on the board after `/kb:kb` builds it:
+  `kb board terminal --id <terminal id> [--space <id>] [--tab <id>] [--workspace-name <name>]`.
+  The `/kb:kb` skill tells the agent how to find the ids; it covers
+  [herdr](https://herdr.dev) today. `--space` moves the board to the workspace of that space.
+- **Optional variables.** Instead, a shell profile can set `KB_TERMINAL_ID`,
+  `KB_TERMINAL_SPACE`, `KB_TERMINAL_TAB` and `KB_WORKSPACE_NAME`; a new board then starts
+  with those values.
+- **Focus on "explain in the session".** When you pick that answer in `kb tui`, it runs
+  `KB_FOCUS_CMD` if set, with `{terminal}` replaced by the board's terminal id, for example
+  `herdr-app do pane.focus --terminal {terminal}`.
+- **Other screens.** A screen of your own can read and answer the board through `kb`'s JSON
+  output. `kb version --json` gives the `ui_contract` version that screens check;
+  `kb board show --json --findings` adds the model judge's findings.
+
+### Upgrading from an earlier version
+
+This version adds schema version 8, which renames the board's terminal columns. Existing data
+is kept.
+
+1. Pull the new version.
+2. Run the setup script again: `pwsh scripts/setup.ps1` or `bash scripts/setup.sh`. On a
+   database that already has boards it prints the migration plan and stops.
+3. Review the plan, then run it again with `-Yes` (PowerShell) or `--yes` (bash).
+4. Run `cargo install --path crates/kb --locked` again.
+5. Update the Claude Code plugin, so that `/kb:kb` has the new terminal step.
+
 ## Command reference
 
 | Command | Purpose |
@@ -169,6 +201,8 @@ another terminal.
 | `kb activity` | Print the activity trail |
 | `kb board check [--history]` | Check the behaviour rules now, or list past violations |
 | `kb db status` | Check the connection and the schema version |
+| `kb board terminal` | Show or record the terminal the agent runs in |
+| `kb version` | Print the version and the `ui_contract` version |
 | `kb --skill` | Print the full usage guide the agent reads |
 
 Every command accepts `--json`. Command output is English; card titles and lane names are

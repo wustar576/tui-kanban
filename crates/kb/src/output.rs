@@ -9,8 +9,8 @@ use kb_core::model::{
     Activity, Board, Cause, CauseKind, DecisionKind, Lane, Origin, QuestionStatus, format_priority,
 };
 use kb_core::read::{
-    BoardSnapshot, BoardSummary, CardDetail, CardSummary, CheckRecord, CommentView, Consequence,
-    EpicSummary, LinkDirection, QuestionView, WorkspaceSummary,
+    ActiveFinding, BoardSnapshot, BoardSummary, CardDetail, CardSummary, CheckRecord, CommentView,
+    Consequence, EpicSummary, LinkDirection, QuestionView, WorkspaceSummary,
 };
 use kb_core::rules::RuleResult;
 use kb_core::write::Inbox;
@@ -18,6 +18,78 @@ use serde::Serialize;
 
 pub fn json<T: Serialize + ?Sized>(value: &T) -> String {
     serde_json::to_string_pretty(value).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+}
+
+/// The first line of `kb board terminal` without `--id` (docs/board-v2.md section 26.4):
+/// the board's terminal, with its space and tab when they are set.
+pub fn terminal_line(
+    board_id: i64,
+    terminal: Option<&str>,
+    space: Option<&str>,
+    tab: Option<&str>,
+) -> String {
+    let Some(terminal) = terminal else {
+        return format!("terminal of board {board_id}: none");
+    };
+    let parts: Vec<String> = [("space", space), ("tab", tab)]
+        .into_iter()
+        .filter_map(|(k, v)| v.map(|v| format!("{k} {v}")))
+        .collect();
+    if parts.is_empty() {
+        format!("terminal of board {board_id}: {terminal}")
+    } else {
+        format!(
+            "terminal of board {board_id}: {terminal} ({})",
+            parts.join(", ")
+        )
+    }
+}
+
+/// The UI contract version (docs/ui-contract.md section 2). Removing or renaming a command
+/// or field listed there adds 1; adding does not.
+pub const UI_CONTRACT: u32 = 1;
+
+/// `kb version`: one line, or `{"version", "ui_contract"}` (docs/cli.md section 4.21).
+pub fn version(json_out: bool) -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    if json_out {
+        json(&serde_json::json!({ "version": version, "ui_contract": UI_CONTRACT }))
+    } else {
+        format!("kb {version} ui_contract {UI_CONTRACT}\n")
+    }
+}
+
+/// `kb board show --json --findings`: the snapshot plus `findings`, the model judge's active
+/// findings with the TUI's tag label and explanation (docs/ui-contract.md section 5).
+pub fn board_with_findings(snap: &BoardSnapshot, findings: &[ActiveFinding]) -> serde_json::Value {
+    let mut value = serde_json::to_value(snap).unwrap_or_default();
+    let list: Vec<serde_json::Value> = findings
+        .iter()
+        .map(|f| {
+            let seq = f
+                .card_id
+                .and_then(|id| {
+                    snap.lanes
+                        .iter()
+                        .flat_map(|l| &l.cards)
+                        .find(|c| c.card.id == id)
+                })
+                .map(|c| c.card.seq);
+            serde_json::json!({
+                "id": f.id,
+                "card_id": f.card_id,
+                "card_seq": seq,
+                "question": f.tag.question(),
+                "p": f.p,
+                "label": kb_tui::layout::judge_label(f.tag),
+                "text": kb_tui::layout::judge_explanation(f.tag, f.p),
+            })
+        })
+        .collect();
+    if let Some(map) = value.as_object_mut() {
+        map.insert("findings".into(), list.into());
+    }
+    value
 }
 
 /// Compact JSON with every non-ASCII character written as `\uXXXX` (UTF-16, so characters
@@ -140,7 +212,7 @@ pub fn start_candidates(session_key: &str, candidates: &[Board]) -> String {
         } else {
             b.title.as_str()
         };
-        let place = match (&b.herdr_terminal, &b.cwd) {
+        let place = match (&b.terminal_id, &b.cwd) {
             (Some(t), _) => format!(", terminal {t}"),
             (None, Some(cwd)) => format!(", folder {cwd}"),
             (None, None) => String::new(),
@@ -756,4 +828,30 @@ pub fn check(results: &[RuleResult], unreplied: &[CommentView]) -> String {
         );
     }
     s.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// docs/board-v2.md section 26.4.
+    #[test]
+    fn terminal_line_lists_only_the_values_that_are_set() {
+        assert_eq!(
+            terminal_line(42, None, None, None),
+            "terminal of board 42: none"
+        );
+        assert_eq!(
+            terminal_line(42, Some("t2b"), None, None),
+            "terminal of board 42: t2b"
+        );
+        assert_eq!(
+            terminal_line(42, Some("t2b"), Some("spc1"), Some("tb1")),
+            "terminal of board 42: t2b (space spc1, tab tb1)"
+        );
+        assert_eq!(
+            terminal_line(42, Some("t2b"), None, Some("tb1")),
+            "terminal of board 42: t2b (tab tb1)"
+        );
+    }
 }

@@ -384,6 +384,15 @@ pub fn activity_text(a: &Activity) -> String {
                 "看板由新的 session 接手".to_string()
             }
         }
+        // docs/board-v2.md section 26.3.
+        "board.terminal" => match d.get("workspace") {
+            Some(_) => format!(
+                "記錄終端機 {}，workspace「{}」",
+                s("terminal"),
+                s("workspace")
+            ),
+            None => format!("記錄終端機 {}", s("terminal")),
+        },
         "lane.add" => format!("新增泳道「{}」", s("lane")),
         "lane.rename" => format!("泳道「{}」改名為「{}」", s("from"), s("to")),
         "lane.move" => format!("移動泳道「{}」", s("lane")),
@@ -676,6 +685,20 @@ mod tests {
                 json!({"seq": 2, "fields": ["title", "priority"]})
             )),
             "#2 修改標題、優先度"
+        );
+        assert_eq!(
+            activity_text(&act(
+                "board.terminal",
+                json!({"terminal": "t2b", "space": "spc1"})
+            )),
+            "記錄終端機 t2b"
+        );
+        assert_eq!(
+            activity_text(&act(
+                "board.terminal",
+                json!({"terminal": "t2b", "space": "spc1", "workspace": "Acme_DevOps"})
+            )),
+            "記錄終端機 t2b，workspace「Acme_DevOps」"
         );
     }
 }

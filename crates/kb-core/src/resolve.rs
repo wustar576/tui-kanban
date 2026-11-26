@@ -1,7 +1,6 @@
 //! Session key and workspace resolution (docs/cli.md sections 2.3 and 2.4).
 
 use std::path::Path;
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -28,13 +27,13 @@ pub fn resolve_session_key(
 pub enum SessionSource {
     /// Sources 1-3: `--session`, `KB_SESSION`, `CLAUDE_CODE_SESSION_ID`.
     Key(String),
-    /// Source 4: the most recently changed active board of this herdr terminal
-    /// (`HC_TERMINAL_ID`); needs a database lookup ([`resolve_session`]).
+    /// Source 4: the most recently changed active board of this terminal
+    /// (`KB_TERMINAL_ID`); needs a database lookup ([`resolve_session`]).
     Terminal(String),
 }
 
 /// Finds the session key source without touching the database: sources 1-3 as in
-/// [`resolve_session_key`], then `HC_TERMINAL_ID`. Fails with [`Error::NoSession`] when
+/// [`resolve_session_key`], then `KB_TERMINAL_ID`. Fails with [`Error::NoSession`] when
 /// none is set.
 pub fn session_source(
     flag: Option<&str>,
@@ -42,9 +41,7 @@ pub fn session_source(
 ) -> Result<SessionSource> {
     match resolve_session_key(flag, &env) {
         Ok(key) => Ok(SessionSource::Key(key)),
-        Err(Error::NoSession) => env("HC_TERMINAL_ID")
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
+        Err(Error::NoSession) => env_text(&env, TERMINAL_ID)
             .map(SessionSource::Terminal)
             .ok_or(Error::NoSession),
         Err(e) => Err(e),
@@ -52,7 +49,7 @@ pub fn session_source(
 }
 
 /// Resolves a [`SessionSource`] to a session key. For a terminal, the key of the most
-/// recently changed active board whose `herdr_terminal` is that terminal; no such board is
+/// recently changed active board whose `terminal_id` is that terminal; no such board is
 /// [`Error::NoSession`].
 pub async fn resolve_session(
     conn: &mut sqlx::postgres::PgConnection,
@@ -67,159 +64,97 @@ pub async fn resolve_session(
     }
 }
 
-/// The herdr location of a terminal, from `hc get <terminal id>`.
+/// Identity of the current terminal (docs/cli.md section 2.3).
+pub const TERMINAL_ID: &str = "KB_TERMINAL_ID";
+/// Id of the workspace area the terminal is in (docs/cli.md section 2.4).
+pub const TERMINAL_SPACE: &str = "KB_TERMINAL_SPACE";
+/// Tab id of the terminal.
+pub const TERMINAL_TAB: &str = "KB_TERMINAL_TAB";
+/// Workspace name when `KB_TERMINAL_SPACE` is set.
+pub const WORKSPACE_NAME: &str = "KB_WORKSPACE_NAME";
+
+/// The variable's value, trimmed; `None` when unset or blank.
+fn env_text(env: impl Fn(&str) -> Option<String>, key: &str) -> Option<String> {
+    env(key)
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// The workspace area of the current terminal, from `KB_TERMINAL_SPACE`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct HerdrContext {
-    /// `labels["herdr.space"]`.
+pub struct SpaceContext {
+    /// `KB_TERMINAL_SPACE`.
     pub space: String,
-    /// `labels["herdr.tab"]`, if present.
-    pub tab: Option<String>,
-    /// The terminal address, e.g. `t2b`.
-    pub terminal: String,
-    /// The part of `labels["where"]` before ` / `; the space id when the label is absent.
+    /// `KB_WORKSPACE_NAME`; the space id when unset.
     pub name: String,
 }
 
-impl HerdrContext {
-    /// Workspace key for this herdr space: `herdr:<space id>`.
+impl SpaceContext {
+    /// Workspace key for this space: `space:<space id>`.
     pub fn workspace_key(&self) -> String {
-        format!("herdr:{}", self.space)
+        format!("space:{}", self.space)
     }
 }
 
-/// Parses the JSON printed by `hc get <id>`. `terminal_id` is the id that was queried;
-/// it is used as the address when the JSON has no `address`. Returns `None` when the
-/// JSON has no `labels["herdr.space"]`.
-pub fn parse_hc_get(json: &str, terminal_id: &str) -> Option<HerdrContext> {
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let labels = value.get("labels")?;
-    let label = |k: &str| {
-        labels
-            .get(k)
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let space = label("herdr.space")?;
-    let name = label("where")
-        .map(|w| w.split(" / ").next().unwrap_or("").trim().to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| space.clone());
-    let terminal = value
-        .get("address")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or(terminal_id)
-        .to_string();
-    Some(HerdrContext {
-        space,
-        tab: label("herdr.tab"),
-        terminal,
-        name,
-    })
-}
-
-/// Runs `hc get $HC_TERMINAL_ID` and parses the result.
-/// Returns `None` when `HC_TERMINAL_ID` is unset, `hc` cannot run or fails, or the
-/// terminal is not in a herdr space.
-pub fn current_herdr_context() -> Option<HerdrContext> {
-    current_hc().and_then(|hc| hc.herdr)
-}
-
-/// Runs `hc get <terminal_id>` and parses the result. `None` on any failure.
-pub fn herdr_context_for(terminal_id: &str) -> Option<HerdrContext> {
-    parse_hc_get(&hc_get(terminal_id)?, terminal_id)
-}
-
-/// Standard output of `hc get <terminal_id>`; `None` when `hc` cannot run or fails.
-fn hc_get(terminal_id: &str) -> Option<String> {
-    let output = Command::new("hc")
-        .args(["get", terminal_id])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).into_owned())
-}
-
-/// The terminal fields a board stores (docs/board-v2.md section 12.7).
+/// The terminal fields a board stores (docs/board-v2.md sections 12.7 and 24).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TerminalInfo {
-    /// The terminal address: `address` from `hc get`, else the `HC_TERMINAL_ID` value.
+    /// `KB_TERMINAL_ID`.
     pub terminal: String,
-    /// `labels["herdr.space"]`, if present.
+    /// `KB_TERMINAL_SPACE`, if set.
     pub space: Option<String>,
-    /// `labels["herdr.tab"]`, if present.
+    /// `KB_TERMINAL_TAB`, if set.
     pub tab: Option<String>,
 }
 
-impl From<&HerdrContext> for TerminalInfo {
-    fn from(ctx: &HerdrContext) -> Self {
-        TerminalInfo {
-            terminal: ctx.terminal.clone(),
-            space: Some(ctx.space.clone()),
-            tab: ctx.tab.clone(),
-        }
+/// What the `KB_TERMINAL_*` variables tell about the current terminal.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TerminalEnv {
+    /// Set when `KB_TERMINAL_ID` is set.
+    pub terminal: Option<TerminalInfo>,
+    /// Set when `KB_TERMINAL_SPACE` is set (workspace resolution).
+    pub space: Option<SpaceContext>,
+}
+
+/// Reads the `KB_TERMINAL_*` variables and `KB_WORKSPACE_NAME` through `env`. Blank
+/// values count as unset. Never fails.
+pub fn terminal_env(env: impl Fn(&str) -> Option<String>) -> TerminalEnv {
+    let space = env_text(&env, TERMINAL_SPACE);
+    let tab = env_text(&env, TERMINAL_TAB);
+    TerminalEnv {
+        terminal: env_text(&env, TERMINAL_ID).map(|terminal| TerminalInfo {
+            terminal,
+            space: space.clone(),
+            tab,
+        }),
+        space: space.map(|space| SpaceContext {
+            name: env_text(&env, WORKSPACE_NAME).unwrap_or_else(|| space.clone()),
+            space,
+        }),
     }
 }
 
-/// Parses the terminal fields from `hc get` output. Never fails: without usable JSON (or
-/// without output, `None`) the address is `terminal_id` and the labels are absent.
-pub fn parse_hc_terminal(json: Option<&str>, terminal_id: &str) -> TerminalInfo {
-    let value: Option<serde_json::Value> = json.and_then(|j| serde_json::from_str(j).ok());
-    let text = |v: Option<&serde_json::Value>| {
-        v.and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
-    let label = |k: &str| text(value.as_ref().and_then(|v| v.get("labels")?.get(k)));
-    TerminalInfo {
-        terminal: text(value.as_ref().and_then(|v| v.get("address")))
-            .unwrap_or_else(|| terminal_id.trim().to_string()),
-        space: label("herdr.space"),
-        tab: label("herdr.tab"),
-    }
+/// [`terminal_env`] of the process environment.
+pub fn current_terminal_env() -> TerminalEnv {
+    terminal_env(|k| std::env::var(k).ok())
 }
 
-/// What one `hc get $HC_TERMINAL_ID` tells about the current terminal.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HcInfo {
-    /// Always known when `HC_TERMINAL_ID` is set.
-    pub terminal: TerminalInfo,
-    /// Only when the terminal is in a herdr space (workspace resolution).
-    pub herdr: Option<HerdrContext>,
+/// The current terminal's fields; `None` when `KB_TERMINAL_ID` is unset.
+pub fn current_terminal() -> Option<TerminalInfo> {
+    current_terminal_env().terminal
 }
 
-/// The current terminal (docs/board-v2.md section 12.7): `None` only when
-/// `HC_TERMINAL_ID` is unset or empty. Runs `hc get` once; when it fails, the terminal
-/// address is the `HC_TERMINAL_ID` value.
-pub fn current_hc() -> Option<HcInfo> {
-    let id = std::env::var("HC_TERMINAL_ID")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())?;
-    let out = hc_get(&id);
-    Some(HcInfo {
-        terminal: parse_hc_terminal(out.as_deref(), &id),
-        herdr: out.as_deref().and_then(|o| parse_hc_get(o, &id)),
-    })
+/// The current workspace area; `None` when `KB_TERMINAL_SPACE` is unset.
+pub fn current_space() -> Option<SpaceContext> {
+    current_terminal_env().space
 }
 
 /// Resolves the workspace of a new board from the current environment: `--workspace`,
-/// else the herdr space of `hc`, else `cwd`; the board also gets the current terminal
+/// else `KB_TERMINAL_SPACE`, else `cwd`; the board also gets the current terminal
 /// whatever the workspace source (docs/board-v2.md section 12.7).
-pub fn workspace_here(manual: Option<&str>, hc: Option<HcInfo>, cwd: &Path) -> WorkspaceTarget {
-    let (terminal, herdr) = match hc {
-        Some(hc) => (Some(hc.terminal), hc.herdr),
-        None => (None, None),
-    };
-    let mut ws = resolve_workspace(manual, herdr, cwd);
-    if terminal.is_some() {
-        ws.terminal = terminal;
-    }
+pub fn workspace_here(manual: Option<&str>, here: TerminalEnv, cwd: &Path) -> WorkspaceTarget {
+    let mut ws = resolve_workspace(manual, here.space, cwd);
+    ws.terminal = here.terminal;
     ws
 }
 
@@ -229,19 +164,19 @@ pub struct WorkspaceTarget {
     pub key: String,
     pub name: String,
     pub source: WorkspaceSource,
-    /// Set when the workspace came from herdr.
-    pub herdr: Option<HerdrContext>,
-    /// Terminal fields stored on the new board (docs/board-v2.md section 12.7). Set from
-    /// `herdr` by [`resolve_workspace`]; [`workspace_here`] sets it for any source.
+    /// Set when the workspace came from `KB_TERMINAL_SPACE`.
+    pub space: Option<SpaceContext>,
+    /// Terminal fields stored on the new board (docs/board-v2.md section 12.7).
+    /// [`workspace_here`] sets it for any source; [`resolve_workspace`] leaves it unset.
     pub terminal: Option<TerminalInfo>,
 }
 
 /// Resolves the workspace of a new board (docs/cli.md section 2.4):
-/// `--workspace <name>` → `manual:<name>`; else the herdr space from `herdr`
-/// (normally [`current_herdr_context`]); else `dir:<cwd>`.
+/// `--workspace <name>` → `manual:<name>`; else the space from `space`
+/// (normally [`current_space`]) → `space:<id>`; else `dir:<cwd>`.
 pub fn resolve_workspace(
     manual: Option<&str>,
-    herdr: Option<HerdrContext>,
+    space: Option<SpaceContext>,
     cwd: &Path,
 ) -> WorkspaceTarget {
     if let Some(name) = manual.map(str::trim).filter(|s| !s.is_empty()) {
@@ -249,17 +184,17 @@ pub fn resolve_workspace(
             key: format!("manual:{name}"),
             name: name.to_string(),
             source: WorkspaceSource::Manual,
-            herdr: None,
+            space: None,
             terminal: None,
         };
     }
-    if let Some(ctx) = herdr {
+    if let Some(ctx) = space {
         return WorkspaceTarget {
             key: ctx.workspace_key(),
             name: ctx.name.clone(),
-            source: WorkspaceSource::Herdr,
-            terminal: Some(TerminalInfo::from(&ctx)),
-            herdr: Some(ctx),
+            source: WorkspaceSource::Space,
+            space: Some(ctx),
+            terminal: None,
         };
     }
     let path = cwd.to_string_lossy().to_string();
@@ -272,7 +207,128 @@ pub fn resolve_workspace(
         key: format!("dir:{path}"),
         name,
         source: WorkspaceSource::Dir,
-        herdr: None,
+        space: None,
         terminal: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let pairs: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k: &str| pairs.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn nothing_set_means_no_terminal_and_no_space() {
+        assert_eq!(terminal_env(env_of(&[])), TerminalEnv::default());
+        let blank = env_of(&[
+            (TERMINAL_ID, "  "),
+            (TERMINAL_SPACE, ""),
+            (TERMINAL_TAB, " "),
+        ]);
+        assert_eq!(terminal_env(blank), TerminalEnv::default());
+    }
+
+    #[test]
+    fn all_variables_set() {
+        let here = terminal_env(env_of(&[
+            (TERMINAL_ID, " t2b "),
+            (TERMINAL_SPACE, "spc1"),
+            (TERMINAL_TAB, "tb1"),
+            (WORKSPACE_NAME, "Acme_DevOps"),
+        ]));
+        assert_eq!(
+            here.terminal,
+            Some(TerminalInfo {
+                terminal: "t2b".into(),
+                space: Some("spc1".into()),
+                tab: Some("tb1".into()),
+            })
+        );
+        assert_eq!(
+            here.space,
+            Some(SpaceContext {
+                space: "spc1".into(),
+                name: "Acme_DevOps".into(),
+            })
+        );
+        assert_eq!(here.space.unwrap().workspace_key(), "space:spc1");
+    }
+
+    #[test]
+    fn space_without_name_uses_the_id_and_needs_no_terminal() {
+        let here = terminal_env(env_of(&[(TERMINAL_SPACE, "spc2")]));
+        assert_eq!(here.terminal, None);
+        assert_eq!(here.space.unwrap().name, "spc2");
+    }
+
+    #[test]
+    fn terminal_without_space() {
+        let here = terminal_env(env_of(&[(TERMINAL_ID, "t7")]));
+        assert_eq!(here.space, None);
+        let t = here.terminal.clone().unwrap();
+        assert_eq!(
+            (t.terminal.as_str(), &t.space, &t.tab),
+            ("t7", &None, &None)
+        );
+        // No space: the workspace comes from the folder; the terminal is still stored.
+        let cwd = Path::new("proj");
+        let ws = workspace_here(None, here.clone(), cwd);
+        assert_eq!(ws.source, WorkspaceSource::Dir);
+        assert_eq!(ws.terminal, Some(t));
+        let manual = workspace_here(Some("手動"), here, cwd);
+        assert_eq!(manual.key, "manual:手動");
+        assert!(manual.terminal.is_some());
+        assert_eq!(
+            workspace_here(None, TerminalEnv::default(), cwd).terminal,
+            None
+        );
+    }
+
+    #[test]
+    fn workspace_order_manual_then_space_then_folder() {
+        let ctx = SpaceContext {
+            space: "spc1".into(),
+            name: "Acme".into(),
+        };
+        let cwd = Path::new("proj");
+        let manual = resolve_workspace(Some("手動"), Some(ctx.clone()), cwd);
+        assert_eq!(
+            (manual.key.as_str(), manual.source),
+            ("manual:手動", WorkspaceSource::Manual)
+        );
+        let space = resolve_workspace(None, Some(ctx), cwd);
+        assert_eq!(
+            (space.key.as_str(), space.name.as_str(), space.source),
+            ("space:spc1", "Acme", WorkspaceSource::Space)
+        );
+        assert!(space.space.is_some());
+        let dir = resolve_workspace(None, None, cwd);
+        assert_eq!(
+            (dir.name.as_str(), dir.source),
+            ("proj", WorkspaceSource::Dir)
+        );
+    }
+
+    #[test]
+    fn session_source_falls_back_to_the_terminal() {
+        let env = env_of(&[(TERMINAL_ID, "t9")]);
+        assert_eq!(
+            session_source(None, &env).unwrap(),
+            SessionSource::Terminal("t9".into())
+        );
+        assert_eq!(
+            session_source(Some("flag"), &env).unwrap(),
+            SessionSource::Key("flag".into())
+        );
+        // The old herdr variable is not read any more.
+        let old = env_of(&[("HC_TERMINAL_ID", "t9")]);
+        assert!(matches!(session_source(None, old), Err(Error::NoSession)));
     }
 }

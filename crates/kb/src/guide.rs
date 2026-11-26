@@ -15,6 +15,7 @@ Starting
 - Do not invent work the user did not agree to. Work you add later while executing is derived.
 - Work already finished or decided before the board started: add the card, then complete it with its result:
   kb card done <n> --result "<what was done or decided>". Do not leave finished cards without a result.
+- In a terminal workspace (tabs or panes), record your terminal on the board: kb board terminal shows how.
 
 Structure
 - Lanes are task progress (kinds: todo, doing, done, dropped). Epics are the stages of the work.
@@ -65,12 +66,14 @@ pub const EMPTY_BOARD: &str =
 /// The compact command reference that `kb --skill` prints after the guide.
 pub const COMMAND_REFERENCE: &str = r#"# Command reference
 Session key: --session <key>, else $KB_SESSION, else $CLAUDE_CODE_SESSION_ID,
-else the latest active board of the herdr terminal $HC_TERMINAL_ID.
+else the latest active board of the terminal $KB_TERMINAL_ID.
 Add --json to any command for JSON output. Card numbers may be written 5 or #5.
 
 Board (one per session)
   kb board start [--title <t>] [--goal <g>] [--new]   create or reopen this session's board
   kb board adopt <board id | session key>             take over an earlier session's board
+  kb board terminal [--id <id> [--space <id>] [--tab <id>] [--workspace-name <name>]]
+      record the terminal this session runs in; without --id: how to find the ids
   kb board init --title <t> [--goal <g>] [--lanes <name:kind,...>] [--epics <name,...>] [--workspace <name>]
   kb board show [--all]   unfinished work; done and dropped lanes show only a count unless --all
   kb board list [--all] [--archived] | archive [--outcome <o>] [--summary <s>] | reopen
@@ -105,6 +108,19 @@ History
   kb activity [--limit <n>]
 Text arguments accept "-" to read standard input. Text may start with "-"; if a note or question text is exactly an option name, put "--" right before the text, after all options."#;
 
+/// What `kb board terminal` prints without `--id`, after the current terminal
+/// (docs/board-v2.md section 26.4, verbatim). It names no terminal program: the recipes per
+/// terminal workspace live in the /kb:kb skill (section 26.10).
+pub const TERMINAL_HOWTO: &str = r##"Record the terminal this session runs in, so the board can be found from it:
+  kb board terminal --id <terminal id> [--space <space id>] [--tab <tab id>] [--workspace-name <name>]
+--space also moves the board to the workspace of that space; --workspace-name names that workspace.
+Find the ids with your terminal workspace's own commands; kb never runs them.
+Outside a terminal workspace there is nothing to record."##;
+
+/// The last line of `kb board start` when the board has no terminal (docs/board-v2.md
+/// section 26.5).
+pub const START_TERMINAL_HINT: &str = "hint: no terminal is recorded for this board. If you run in a terminal workspace (tabs or panes), run \"kb board terminal\" to see how to record it.";
+
 /// What an agent reads once it has a board: the guide, then the empty-board line or the
 /// `kb board show` output without `--all` (docs/board-v2.md sections 12.2, 12.4, 15.1).
 /// Callers also forget the board's last `next:` line (section 15.2): the context received
@@ -121,4 +137,52 @@ pub fn board_context(snapshot: &kb_core::read::BoardSnapshot) -> String {
 /// `kb --skill`: the guide, a blank line, the command reference.
 pub fn skill_text() -> String {
     format!("{USAGE_GUIDE}\n\n{COMMAND_REFERENCE}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The code block of `section` in docs/board-v2.md that starts right after `marker`;
+    /// `None` in a checkout without the design documents.
+    fn spec_block(section: &str, marker: &str) -> Option<String> {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/board-v2.md");
+        let doc = std::fs::read_to_string(path).ok()?.replace("\r\n", "\n");
+        let start = doc.find(&format!("\n### {section} ")).expect("section");
+        let section = &doc[start..];
+        let after = &section[section.find(marker).expect("marker")..];
+        let begin = after.find("```\n").expect("code block") + 4;
+        let len = after[begin..].find("\n```").expect("end of code block");
+        Some(after[begin..begin + len].to_string())
+    }
+
+    #[test]
+    fn terminal_howto_names_no_terminal_program() {
+        // The recipes per terminal workspace live in the /kb:kb skill (section 26.10).
+        assert!(!TERMINAL_HOWTO.contains("herdr"));
+        assert!(!TERMINAL_HOWTO.contains("docs/"));
+    }
+
+    #[test]
+    fn terminal_howto_equals_the_spec() {
+        if let Some(block) = spec_block("26.4", "然後空一行") {
+            assert_eq!(TERMINAL_HOWTO, block);
+        }
+    }
+
+    #[test]
+    fn start_hint_equals_the_spec() {
+        if let Some(block) = spec_block("26.5", "最後加上") {
+            assert_eq!(START_TERMINAL_HINT, block);
+        }
+    }
+
+    #[test]
+    fn the_guide_names_no_terminal_program() {
+        assert!(USAGE_GUIDE.contains("kb board terminal shows how"));
+        for name in ["herdr", "hc get", "HC_TERMINAL_ID"] {
+            assert!(!USAGE_GUIDE.contains(name), "{name}");
+        }
+        assert!(COMMAND_REFERENCE.contains("kb board terminal [--id <id>"));
+    }
 }
